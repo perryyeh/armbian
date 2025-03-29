@@ -44,3 +44,38 @@
 ```bash
 git clone https://github.com/your-repo/macvlan-init.git
 cd macvlan-init
+```
+
+### 2. 运行脚本
+
+```bash
+chmod +x init.sh
+./init.sh
+```
+
+按照交互提示操作即可。
+
+## 📦 依赖项
+脚本依赖以下工具，请确保已安装：
+- ipcalc （用于解析子网）
+- docker
+- systemd（Armbian 默认已包含）
+
+安装方式（如未安装）：
+```bash
+sudo apt update
+sudo apt install ipcalc docker.io -y
+```
+
+## 📌 注意事项
+- 脚本默认使用 fd88:88::/60 作为 IPv6 网段
+- 已存在的 macvlan 网络会被删除并重新创建
+- 如果需要为更多容器分配固定 IP，可根据桥接 IP 模板自行添加
+
+## 🛠 示例生成内容
+- macvlan 网络（Docker）
+- /usr/local/bin/macvlan-setup.sh 配置脚本
+- /etc/systemd/system/macvlan.service Systemd 服务
+
+## 📜 License
+MIT License © 2025
