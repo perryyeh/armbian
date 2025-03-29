@@ -1,0 +1,119 @@
+# === 操作系统 ===
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+Desktop.ini
+*.swp
+*.swo
+
+# === 日志文件 ===
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# === 临时文件 ===
+*.tmp
+*.temp
+*.bak
+*.old
+*.orig
+*.rej
+
+# === 编译输出 / 构建文件夹 ===
+dist/
+build/
+out/
+target/
+*.class
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.dylib
+
+# === 依赖管理文件夹 ===
+node_modules/
+bower_components/
+vendor/
+.env
+.env.local
+.env.*.local
+
+# === IDE & 编辑器 ===
+.vscode/
+.idea/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+*.iml
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# === Rust ===
+/target/
+Cargo.lock
+
+# === Go ===
+/bin/
+/pkg/
+
+# === Java ===
+*.class
+*.jar
+*.war
+*.ear
+
+# === C/C++ ===
+*.out
+*.a
+*.lib
+
+# === .NET ===
+*.dll
+*.exe
+*.pdb
+*.cache
+*.dbmdl
+*.user
+*.vs/
+
+# === Mac/Linux Swap 文件 ===
+*~
+*.swp
+*.swo
+*.swn
+
+# === SQLite ===
+*.sqlite
+*.sqlite3
+*.db
+
+# === Coverage / 测试 ===
+coverage/
+*.lcov
+.nyc_output/
+
+# === Lock files ===
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# === Git ===
+*.patch
+*.diff
+*.orig
+
+# === 自定义缓存文件夹（可按需修改）===
+.cache/
+.temp/
+logs/
+*.log
