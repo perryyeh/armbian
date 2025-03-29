@@ -39,16 +39,17 @@
 
 ## 🚀 使用方法
 
-### 1. 克隆项目或复制脚本
+### 1. 直接运行脚本
 
 ```bash
-git clone https://github.com/your-repo/macvlan-init.git
-cd macvlan-init
+bash <(curl -fsSL https://raw.githubusercontent.com/perryyeh/armbian/main/init.sh)
 ```
 
-### 2. 运行脚本
+### 2. 或克隆项目运行
 
 ```bash
+git clone https://github.com/perryyeh/armbian.git
+cd armbian
 chmod +x init.sh
 ./init.sh
 ```
