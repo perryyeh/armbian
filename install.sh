@@ -286,6 +286,8 @@ function install_mihomo() {
     --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.default.disable_ipv6=0 \
     --device=/dev/net/tun --cap-add=NET_ADMIN \
     -v ${dockerapps}/mihomo:/root/.config/mihomo metacubex/mihomo
+
+    echo "mihomo 访问地址：http://$mihomo:9090/ui/"
 }
 
 function install_mosdns() {
@@ -362,7 +364,7 @@ function install_adguardhome() {
         sed -i "s/fd10:00:00::1:119/$mosdns6/g;" ${dockerapps}/adguardhome/AdGuardHome.yaml
         sed -i "s/10.0.0.1/$gateway/g" ${dockerapps}/adguardhome/AdGuardHome.yaml
     else
-        echo "❌ 配置文件仍未生成，跳过 sed 替换"
+        echo "❌ 配置文件跳过sed替换，请自行更改AdGuardHome.yaml中mosdns和gateway配置"
     fi
 
     docker run -d --name=adguardhome --hostname=adguardhome --restart=always --network=macvlan \
@@ -370,6 +372,8 @@ function install_adguardhome() {
     -v ${dockerapps}/adguardwork:/opt/adguardhome/work \
     -v ${dockerapps}/adguardhome:/opt/adguardhome/conf \
     adguard/adguardhome
+
+    echo "adguardhome 访问地址：http://$adguard"
 }
 
 
@@ -382,6 +386,8 @@ function install_librespeed() {
     docker run -d --name=librespeed --hostname=librespeed --restart=always --network=macvlan \
     --ip=${librespeed} --ip6=${librespeed6} --mac-address=${librespeedmac} \
     linuxserver/librespeed:latest
+
+    echo "librespeed 访问地址：http://$librespeed"
 }
 
 function calculate_ip_mac() {
