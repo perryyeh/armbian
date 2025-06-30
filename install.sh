@@ -213,17 +213,17 @@ function create_macvlan() {
     return 1
   fi
 
-  # ========== 7. daemon.json ==========
-  if [ ! -s /etc/docker/daemon.json ]; then
-    echo "{\"ipv6\": true, \"fixed-cidr-v6\": \"$iprange6\"}" | sudo tee /etc/docker/daemon.json
-  else
-    sudo jq '. + {"ipv6":true,"fixed-cidr-v6":"'"$iprange6"'"}' /etc/docker/daemon.json > tmp.json && sudo mv tmp.json /etc/docker/daemon.json
-  fi
-  sudo systemctl restart docker
+  # ========== 7. daemon.json ========== 此段不能用，有冲突
+  # if [ ! -s /etc/docker/daemon.json ]; then
+  #   echo "{\"ipv6\": true, \"fixed-cidr-v6\": \"$iprange6\"}" | sudo tee /etc/docker/daemon.json
+  # else
+  #   sudo jq '. + {"ipv6":true,"fixed-cidr-v6":"'"$iprange6"'"}' /etc/docker/daemon.json > tmp.json && sudo mv tmp.json /etc/docker/daemon.json
+  # fi
+  # sudo systemctl restart docker
 
   # ========== 8. 创建 macvlan ==========
   echo "docker network create -d macvlan --subnet=\"$cidr\" --ip-range=\"$iprange\" --gateway=\"$gateway\" --ipv6 --subnet=\"$cidr6\" --gateway=\"$gateway6\" -o parent=\"$networkcard\" macvlan"
-  docker network create -d macvlan --subnet=$cidr --ip-range=$iprange --gateway=$gateway --ipam-opt com.docker.network.enable_ipv6=true --subnet=$cidr6 --gateway=$gateway6 -o parent=$networkcard macvlan
+  docker network create -d macvlan --subnet=$cidr --ip-range=$iprange --gateway=$gateway --ipv6 --subnet=$cidr6 --gateway=$gateway6 -o parent=$networkcard macvlan
 
   # ========== 9. macvlan 互通 ==========
   cat <<EOF | sudo tee /usr/local/bin/macvlan-setup.sh
@@ -261,7 +261,6 @@ EOF
   sudo systemctl start macvlan.service
   sudo systemctl status macvlan.service
 }
-
 
 function install_mihomo() {
     calculate_ip_mac 120
@@ -448,6 +447,15 @@ function clean_macvlan() {
     docker network rm macvlan
     sudo rm /usr/local/bin/macvlan-setup.sh
     sudo systemctl daemon-reload
+    sudo rm /etc/docker/daemon.json
+    sudo systemctl restart docker
+    # 清理路由
+    for prefix in fd10 fd17 fd19; do
+        ip -6 route | grep "^$prefix" | awk '{print $1}' | while read route; do
+            sudo ip -6 route del $route
+        done
+    done
+
     echo "macvlan 和 macvlan bridge 已清理完成。"
 }
 
