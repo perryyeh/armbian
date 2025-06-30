@@ -268,6 +268,7 @@ function install_mihomo() {
     mihomo=$calculated_ip
     mihomo6=$calculated_ip6
     mihomomac=$calculated_mac
+    gateway=$calculated_gateway
 
     read -p "请输入dockerapps存储目录(例如 /data/dockerapps): " dockerapps
     cd ${dockerapps}
@@ -289,10 +290,15 @@ function install_mihomo() {
 }
 
 function install_mosdns() {
+
+    calculate_ip_mac 120
+    mihomo=$calculated_ip
+
     calculate_ip_mac 119
     mosdns=$calculated_ip
     mosdns6=$calculated_ip6
     mosdnsmac=$calculated_mac
+    gateway=$calculated_gateway
 
     read -p "请输入dockerapps存储目录(例如 /data/dockerapps): " dockerapps
     cd ${dockerapps}
@@ -303,7 +309,7 @@ function install_mosdns() {
       rm -rf ${dockerapps}/mosdns
     fi
 
-    git clone https://github.comp/erryyeh/mosdns.git
+    git clone https://github.com/perryyeh/mosdns.git
     sed -i "s/198.18.0.2/$mihomo/g" ${dockerapps}/mosdns/config.yaml
     sed -i "s/10.0.0.1/$gateway/g" ${dockerapps}/mosdns/config.yaml
 
@@ -313,13 +319,20 @@ function install_mosdns() {
 }
 
 function install_adguardhome() {
+
+    calculate_ip_mac 119
+    mosdns=$calculated_ip
+    mosdns6=$calculated_ip6
+
     calculate_ip_mac 114
     adguard=$calculated_ip
     adguard6=$calculated_ip6
     adguardmac=$calculated_mac
+    gateway=$calculated_gateway
 
     read -p "请输入dockerapps存储目录(例如 /data/dockerapps): " dockerapps
     cd ${dockerapps}
+
 
     # 如果 mihomo 目录已存在则先删除
     if [ -d "${dockerapps}/adguardhome" ]; then
@@ -327,13 +340,36 @@ function install_adguardhome() {
       rm -rf ${dockerapps}/adguardhome
     fi
 
+    # 生成adguard work目录
+    mkdir -p adguardwork
+
     git clone https://github.com/perryyeh/adguardhome.git
-    sed -i "s/10.0.0.119/$mosdns/g;s/fd10:00:00::1:119/$mosdns6/g;s/10.0.0.1/$gateway/g" ${dockerapps}/adguardhome/config.yaml
+
+
+    # 等待文件生成，最多等 10 秒
+    for i in {1..30}; do
+        if [ -f "${dockerapps}/adguardhome/AdGuardHome.yaml" ]; then
+            echo "✅ 配置文件已生成，开始修改..."
+            break
+        else
+            echo "⏳ 等待配置文件生成中 ($i/10)..."
+            sleep 1
+        fi
+    done
+
+    # 再次检查并 sed
+    if [ -f "${dockerapps}/adguardhome/AdGuardHome.yaml" ]; then
+        sed -i "s/10.0.1.119/$mosdns/g;" ${dockerapps}/adguardhome/AdGuardHome.yaml
+        sed -i "s/fd10:00:00::1:119/$mosdns6/g;" ${dockerapps}/adguardhome/AdGuardHome.yaml
+        sed -i "s/10.0.0.1/$gateway/g" ${dockerapps}/adguardhome/AdGuardHome.yaml
+    else
+        echo "❌ 配置文件仍未生成，跳过 sed 替换"
+    fi
 
     docker run -d --name=adguardhome --hostname=adguardhome --restart=always --network=macvlan \
     --ip=${adguard} --ip6=${adguard6} --mac-address=${adguardmac} \
-    -v ${dockerapps}/adguardhome/work:/opt/adguardhome/work \
-    -v ${dockerapps}/adguardhome/conf:/opt/adguardhome/conf \
+    -v ${dockerapps}/adguardwork:/opt/adguardhome/work \
+    -v ${dockerapps}/adguardhome:/opt/adguardhome/conf \
     adguard/adguardhome
 }
 
@@ -359,6 +395,9 @@ function calculate_ip_mac() {
   iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .IPRange')
   iprange6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet')
 
+  gateway=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Gateway | test(":") | not) | .Gateway')
+  gateway6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Gateway | test(":")) | .Gateway')
+
   iprangev4=$(echo $iprange | cut -d'/' -f1)
   iprangev6_prefix=$(echo $iprange6 | cut -d'/' -f1)
 
@@ -366,18 +405,17 @@ function calculate_ip_mac() {
   ip="${iprangev4%.*}.$last_octet"
 
   # 3. 计算 IPv6
- if [ -n "$iprangev6_prefix" ]; then
-   ipv4_third=$(echo $ip | cut -d'.' -f3)
-   ipv4_fourth=$(echo $ip | cut -d'.' -f4)
-   if [[ "$iprangev6_prefix" == *"::" ]]; then
-     ip6="${iprangev6_prefix}${ipv4_third}:${ipv4_fourth}"
-   else
-     ip6="${iprangev6_prefix}::${ipv4_third}:${ipv4_fourth}"
-   fi
- else
-   ip6=""
- fi
-
+  if [ -n "$iprangev6_prefix" ]; then
+    ipv4_third=$(echo $ip | cut -d'.' -f3)
+    ipv4_fourth=$(echo $ip | cut -d'.' -f4)
+    if [[ "$iprangev6_prefix" == *"::" ]]; then
+      ip6="${iprangev6_prefix}${ipv4_third}:${ipv4_fourth}"
+    else
+      ip6="${iprangev6_prefix}::${ipv4_third}:${ipv4_fourth}"
+    fi
+  else
+    ip6=""
+  fi
 
   # 4. MAC 生成
   ip_to_mac() {
@@ -390,11 +428,16 @@ function calculate_ip_mac() {
   echo "IPv4: $ip"
   echo "IPv6: $ip6"
   echo "MAC: $mac"
+  echo "Gateway: $gateway"
+  echo "Gateway6: $gateway6"
 
   calculated_ip=$ip
   calculated_ip6=$ip6
   calculated_mac=$mac
+  calculated_gateway=$gateway
+  calculated_gateway6=$gateway6
 }
+
 
 function clean_macvlan() {
     echo "正在清理macvlan bridge 和 docker macvlan网络..."
