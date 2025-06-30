@@ -222,7 +222,7 @@ function create_macvlan() {
   sudo systemctl restart docker
 
   # ========== 8. 创建 macvlan ==========
-  echo "docker network create -d macvlan --subnet=\"$cidr\" --ip-range=\"$iprange\" --gateway=\"$gateway\" --ipam-opt com.docker.network.enable_ipv6=true --subnet=\"$cidr6\" --gateway=\"$gateway6\" -o parent=\"$networkcard\" macvlan"
+  echo "docker network create -d macvlan --subnet=\"$cidr\" --ip-range=\"$iprange\" --gateway=\"$gateway\" --ipv6 --subnet=\"$cidr6\" --gateway=\"$gateway6\" -o parent=\"$networkcard\" macvlan"
   docker network create -d macvlan --subnet=$cidr --ip-range=$iprange --gateway=$gateway --ipam-opt com.docker.network.enable_ipv6=true --subnet=$cidr6 --gateway=$gateway6 -o parent=$networkcard macvlan
 
   # ========== 9. macvlan 互通 ==========
