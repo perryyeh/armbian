@@ -159,6 +159,7 @@ function create_macvlan() {
   read -p "请输入 macvlan IPv4 range, 回车使用 $cidr: " iprange
   [ -z "$iprange" ] && iprange=$cidr
   iprangev4=$(echo $iprange | cut -d'/' -f1)
+  subnet4=$(echo $iprange | cut -d'/' -f2)
 
   # ========== 4. 获取 IPv6 ==========
   ip6_info=$(ip -6 addr show $networkcard | grep -w inet6 | grep fd | head -n1)
@@ -183,15 +184,14 @@ function create_macvlan() {
   [ -n "$input_cidr6" ] && cidr6=$input_cidr6
 
   read -p "请输入 macvlan IPv6 range: " iprange6
+  subnet6=$(echo $iprange6 | cut -d'/' -f2)
   iprangev6_prefix=$(echo $iprange6 | cut -d'/' -f1)
-
-  # 提取 iprangev6_prefix 去除最后一段，确保以 ::
   iprangev6_prefix=$(echo $iprangev6_prefix | rev | cut -d':' -f2- | rev):
 
-  # ========== 5. 计算 bridge ==========
+  # ========== 5. 计算 bridge 和 mihomo ==========
   bridge="${iprangev4%.*}.254"
+  mihomo="${iprangev4%.*}.120"
 
-  # IPv6 bridge, 拼接为 ::11:254
   ipv4_fourth=$(echo $bridge | cut -d'.' -f4)
   bridge6="${iprangev6_prefix}${ipv4_fourth}"
 
@@ -202,6 +202,8 @@ function create_macvlan() {
   echo "host ip：$ip $ip6"
   echo "gateway：$gateway $gateway6"
   echo "subnet：$cidr $cidr6"
+  echo "subnet4：$subnet4"
+  echo "subnet6：$subnet6"
   echo "iprange：$iprange $iprange6"
   echo "bridge：$bridge $bridge6    MAC: $bridgemac"
 
@@ -228,12 +230,13 @@ function create_macvlan() {
 #!/bin/bash
 ip link del macvlan-bridge 2>/dev/null
 ip link add macvlan-bridge link $networkcard type macvlan mode bridge
-ip addr add $bridge/24 dev macvlan-bridge
-ip -6 addr add $bridge6/64 dev macvlan-bridge
+ip addr add $bridge/$subnet4 dev macvlan-bridge
+ip -6 addr add $bridge6/$subnet6 dev macvlan-bridge
 ip link set macvlan-bridge up
 ip link set macvlan-bridge promisc on
 ip route replace $iprange dev macvlan-bridge
 ip -6 route replace $iprange6 dev macvlan-bridge
+ip route add 198.18.0.0/15 via $mihomo dev macvlan-bridge
 EOF
 
   chmod +x /usr/local/bin/macvlan-setup.sh
