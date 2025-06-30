@@ -36,11 +36,11 @@ function show_menu() {
     echo "5）安装docker"
     echo "6）安装portainer面板和watchtower自动更新"
     echo "7）开启ipv6并创建macvlan"
-    echo "8）安装mihomo"
-    echo "9）安装mosdns"
-    echo "10）安装adguardhome"
+    echo "9）清理macvlan和macvlan bridge"
     echo "11）安装librespeed测速"
-    echo "12）清理macvlan和macvlan bridge"
+    echo "14）安装adguardhome"
+    echo "19）安装mosdns"
+    echo "20）安装mihomo"
     echo "99）退出"
     echo "============================"
 }
@@ -77,7 +77,7 @@ function install_docker() {
 }
 
 function install_portainer_watchtower() {
-    read -p "请输入dockerapps存储目录(例如 /data/dockerapps): " dockerapps
+    read -p "即将安装watchtower，请输入存储目录(例如 /data/dockerapps): " dockerapps
     docker run -d -p 8000:8000 -p 9443:9443 --network=host --name=portainer --restart=always \
     -v /var/run/docker.sock:/var/run/docker.sock -v ${dockerapps}/portainer:/data portainer/portainer-ce:lts
 
@@ -270,7 +270,7 @@ function install_mihomo() {
     mihomomac=$calculated_mac
     gateway=$calculated_gateway
 
-    read -p "请输入dockerapps存储目录(例如 /data/dockerapps): " dockerapps
+    read -p "即将安装mihomo，请输入存储目录(例如 /data/dockerapps): " dockerapps
     cd ${dockerapps}
 
     # 如果 mihomo 目录已存在则先删除
@@ -300,7 +300,7 @@ function install_mosdns() {
     mosdnsmac=$calculated_mac
     gateway=$calculated_gateway
 
-    read -p "请输入dockerapps存储目录(例如 /data/dockerapps): " dockerapps
+    read -p "即将安装mosdns，请输入存储目录(例如 /data/dockerapps): " dockerapps
     cd ${dockerapps}
 
     # 如果 mihomo 目录已存在则先删除
@@ -330,7 +330,7 @@ function install_adguardhome() {
     adguardmac=$calculated_mac
     gateway=$calculated_gateway
 
-    read -p "请输入dockerapps存储目录(例如 /data/dockerapps): " dockerapps
+    read -p "即将安装adguardhome，请输入存储目录(例如 /data/dockerapps): " dockerapps
     cd ${dockerapps}
 
 
@@ -467,11 +467,11 @@ while true; do
         5) install_docker ;;
         6) install_portainer_watchtower ;;
         7) create_macvlan ;;
-        8) install_mihomo ;;
-        9) install_mosdns ;;
-        10) install_adguardhome ;;
+        9) clean_macvlan ;;
         11) install_librespeed ;;
-        12) clean_macvlan ;;
+        14) install_adguardhome ;;
+        19) install_mosdns ;;
+        20) install_mihomo ;;
         99) echo "退出脚本。"; exit 0 ;;
         *) echo "无效选项，请重新输入。" ;;
     esac
