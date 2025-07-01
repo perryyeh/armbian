@@ -372,7 +372,7 @@ function install_mihomo() {
     --device=/dev/net/tun --cap-add=NET_ADMIN \
     -v ${dockerapps}/mihomo:/root/.config/mihomo metacubex/mihomo
 
-    echo "mihomo 访问地址：http://$mihomo:9090/ui/"
+    echo "mihomo 访问地址：http://$mihomo:9090/ui/  密码：admin"
 }
 
 function install_mosdns() {
@@ -458,7 +458,7 @@ function install_adguardhome() {
     -v ${dockerapps}/adguardhome:/opt/adguardhome/conf \
     adguard/adguardhome
 
-    echo "adguardhome 访问地址：http://$adguard"
+    echo "adguardhome 访问地址：http://$adguard  用户名admin 密码admin"
 }
 
 
