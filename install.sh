@@ -58,23 +58,35 @@ function docker_info() { docker info; }
 
 function install_docker() {
     . /etc/os-release
+
+    sudo apt-get update
+    sudo apt-get install -y ca-certificates curl gnupg lsb-release
+
+    sudo install -m 0755 -d /etc/apt/keyrings
+
     if [[ "$ID" == "debian" ]]; then
-        sudo apt-get update
-        sudo apt-get install -y ca-certificates curl
-        sudo install -m 0755 -d /etc/apt/keyrings
         sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
         sudo chmod a+r /etc/apt/keyrings/docker.asc
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        sudo apt-get update
+
     elif [[ "$ID" == "ubuntu" ]]; then
-        sudo apt-get update
-        sudo apt-get install -y ca-certificates curl
-        sudo install -m 0755 -d /etc/apt/keyrings
         sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
         sudo chmod a+r /etc/apt/keyrings/docker.asc
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        sudo apt-get update
+
+    else
+        echo "当前系统 $ID 不在支持范围内，请手动安装 Docker。"
+        return 1
     fi
+
+    sudo apt-get update
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+    sudo systemctl enable docker
+    sudo systemctl start docker
+
+    echo "✅ Docker 安装完成，版本信息："
+    docker --version
 }
 
 function format_disk() {
