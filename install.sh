@@ -77,6 +77,65 @@ function install_docker() {
     fi
 }
 
+function format_disk() {
+  echo "📝 当前磁盘列表："
+  lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT
+
+  read -p "请输入需要格式化的磁盘名称（例如 sda，不含 /dev/）: " disk_name
+  disk_path="/dev/$disk_name"
+
+  # 检查磁盘是否存在
+  if [ ! -b "$disk_path" ]; then
+    echo "❌ 磁盘 $disk_path 不存在，退出"
+    return 1
+  fi
+
+  echo "🔍 选择的磁盘信息："
+  lsblk $disk_path
+
+  read -p "⚠️ 警告：磁盘 $disk_path 数据将被清除，确认格式化？(y/n): " confirm
+  if [ "$confirm" != "y" ]; then
+    echo "❌ 操作取消"
+    return 1
+  fi
+
+  # 检查磁盘上是否有分区
+  partitions=$(lsblk -n -o NAME $disk_path | grep -v "^$disk_name$")
+  if [ -n "$partitions" ]; then
+    echo "🔧 删除磁盘上已有分区..."
+    for part in $partitions; do
+      sudo wipefs -a /dev/$part
+      sudo parted /dev/$disk_name rm $(echo $part | grep -o "[0-9]*$")
+    done
+  fi
+
+  echo "💽 创建新分区并格式化 ext4"
+  sudo parted -s $disk_path mklabel gpt
+  sudo parted -s $disk_path mkpart primary ext4 0% 100%
+  sudo mkfs.ext4 -F ${disk_path}1
+
+  # 检查是否已挂载
+  mountpoint=$(lsblk -no MOUNTPOINT ${disk_path}1)
+  if [ -n "$mountpoint" ]; then
+    echo "✅ 分区已挂载到：$mountpoint"
+  else
+    read -p "📁 请输入挂载目录（例如 /data）： " mount_dir
+    if [ ! -d "$mount_dir" ]; then
+      sudo mkdir -p $mount_dir
+    fi
+    echo "🔗 挂载分区到 $mount_dir"
+    sudo mount ${disk_path}1 $mount_dir
+
+    # 自动写入 /etc/fstab
+    uuid=$(sudo blkid -s UUID -o value ${disk_path}1)
+    echo "UUID=$uuid $mount_dir ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
+
+    echo "✅ 格式化并挂载完成：$disk_path -> $mount_dir"
+    echo "🔒 永久挂载已添加到 /etc/fstab，重启后自动挂载"
+  fi
+}
+
+
 function install_portainer_watchtower() {
     read -p "即将安装watchtower，请输入存储目录(例如 /data/dockerapps): " dockerapps
     docker run -d -p 8000:8000 -p 9443:9443 --network=host --name=portainer --restart=always \
