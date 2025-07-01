@@ -276,6 +276,9 @@ function create_macvlan_network() {
     return 1
   fi
 
+  # 启用 promiscuous mode
+  sudo ip link set $networkcard promisc on
+
   # 创建 docker macvlan 网络
   echo "🔨 正在创建 docker macvlan 网络..."
   docker network create -d macvlan \
