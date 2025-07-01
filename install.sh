@@ -33,10 +33,11 @@ function show_menu() {
     echo "2）显示网卡信息"
     echo "3）显示磁盘信息"
     echo "4）显示docker信息"
-    echo "5）安装docker"
-    echo "6）安装portainer面板和watchtower自动更新"
-    echo "7）开启ipv6并创建macvlan"
+    echo "5）格式化磁盘并挂载"
+    echo "7）安装docker"
+    echo "8）开启ipv6并创建macvlan"
     echo "9）清理macvlan和macvlan bridge"
+    echo "10）安装portainer面板和watchtower自动更新"
     echo "11）安装librespeed测速"
     echo "14）安装adguardhome"
     echo "19）安装mosdns"
@@ -478,10 +479,11 @@ while true; do
         2) nic_info ;;
         3) disk_info ;;
         4) docker_info ;;
-        5) install_docker ;;
-        6) install_portainer_watchtower ;;
-        7) create_macvlan ;;
+        5) format_disk ;;
+        7) install_docker ;;
+        8) create_macvlan ;;
         9) clean_macvlan ;;
+        10) install_portainer_watchtower ;;
         11) install_librespeed ;;
         14) install_adguardhome ;;
         19) install_mosdns ;;
