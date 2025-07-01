@@ -19,6 +19,7 @@ function install_dependencies() {
     done
 }
 
+echo "⚠️ 请以 root 权限运行本脚本"
 
 # ========== 主菜单 ==========
 
@@ -36,12 +37,14 @@ function show_menu() {
     echo "5）格式化磁盘并挂载"
     echo "7）安装docker"
     echo "8）开启ipv6并创建macvlan"
-    echo "9）清理macvlan和macvlan bridge"
     echo "10）安装portainer面板和watchtower自动更新"
     echo "11）安装librespeed测速"
     echo "14）安装adguardhome"
     echo "19）安装mosdns"
     echo "20）安装mihomo"
+    echo "80）创建macvlan bridge"
+    echo "90）清理macvlan bridge"
+    echo "91）清理macvlan"
     echo "99）退出"
     echo "============================"
 }
@@ -156,46 +159,50 @@ function install_portainer_watchtower() {
     docker run -d --name=watchtower --restart=always -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup
 }
 
-function create_macvlan() {
-  echo "开启ipv6并创建macvlan"
+# ========== 工具函数 ==========
+# 计算IP地址对应MAC地址
+ip_to_mac() {
+  IFS='.' read -r ip1 ip2 ip3 ip4 <<< "$1"
+  printf '86:88:%02x:%02x:%02x:%02x\n' $ip1 $ip2 $ip3 $ip4
+}
 
-  # ========== 工具函数 ==========
-  get_subnet_v4() {
-    local ip=$1
-    local iface=$2
-    local cidr=$(ip route | grep -v "^default" | grep "$iface" | grep "$ip" | awk '{print $1}')
-    if [ -z "$cidr" ]; then
-      local netmask=$(ip -4 addr show $iface | grep inet | awk '{print $2}' | cut -d'/' -f2)
-      cidr=$(ipcalc -n $ip/$netmask | grep Network | awk '{print $2}')
-    fi
-    echo $cidr
-  }
+# 计算IPv4对应IPv6前缀
+ipv4_to_ipv6_prefix() {
+  local ip=$1
+  local first_octet=$(echo $ip | cut -d'.' -f1)
+  local second_octet=$(echo $ip | cut -d'.' -f2)
+  local third_octet=$(echo $ip | cut -d'.' -f3)
 
-  ip_to_mac() {
-    IFS='.' read -r ip1 ip2 ip3 ip4 <<< "$1"
-    printf '86:88:%02x:%02x:%02x:%02x\n' $ip1 $ip2 $ip3 $ip4
-  }
+  if [[ "$first_octet" == "10" ]]; then
+    prefix="fd10"
+  elif [[ "$first_octet" == "172" ]]; then
+    prefix="fd17"
+  elif [[ "$first_octet" == "192" ]]; then
+    prefix="fd19"
+  else
+    prefix="fd00"
+  fi
 
-  ipv4_to_ipv6_prefix() {
-    local ip=$1
-    local first_octet=$(echo $ip | cut -d'.' -f1)
-    local second_octet=$(echo $ip | cut -d'.' -f2)
-    local third_octet=$(echo $ip | cut -d'.' -f3)
+  echo "${prefix}:${second_octet}:${third_octet}"
+}
 
-    if [[ "$first_octet" == "10" ]]; then
-      prefix="fd10"
-    elif [[ "$first_octet" == "172" ]]; then
-      prefix="fd17"
-    elif [[ "$first_octet" == "192" ]]; then
-      prefix="fd19"
-    else
-      prefix="fd00"
-    fi
+# 获取网卡子网
+get_subnet_v4() {
+  local ip=$1
+  local iface=$2
+  local cidr=$(ip route | grep -v "^default" | grep "$iface" | grep "$ip" | awk '{print $1}')
+  if [ -z "$cidr" ]; then
+    local netmask=$(ip -4 addr show $iface | grep inet | awk '{print $2}' | cut -d'/' -f2)
+    cidr=$(ipcalc -n $ip/$netmask | grep Network | awk '{print $2}')
+  fi
+  echo $cidr
+}
 
-    echo "${prefix}:${second_octet}:${third_octet}"
-  }
+# ========== 1. 创建 macvlan 网络 ==========
+function create_macvlan_network() {
+  echo "🔧 开始创建 macvlan 网络"
 
-  # ========== 1. 显示网卡列表 ==========
+  # 列出所有网卡供用户选择
   interfaces=($(ls /sys/class/net))
   echo "请选择网卡："
   for i in "${!interfaces[@]}"; do
@@ -204,21 +211,14 @@ function create_macvlan() {
     echo "$i) ${interfaces[$i]}  IPv4: ${ip4:-无}  IPv6: ${ip6:-无}"
   done
 
-  # ========== 2. 用户选择 ==========
   read -p "输入网卡序号: " netcard_index
   networkcard=${interfaces[$netcard_index]}
   echo "选择的网卡: $networkcard"
 
-  # ========== 3. 获取 IPv4 ==========
+  # 获取IPv4信息
   ip=$(ip -4 addr show $networkcard | grep -w inet | head -n1 | awk '{print $2}' | cut -d'/' -f1)
   cidr=$(get_subnet_v4 $ip $networkcard)
   gateway=$(ip route | grep "^default" | grep "dev $networkcard" | awk '{print $3}')
-
-  echo "下面开始配置macvlan的gateway/subnet/iprange，例子："
-  echo "          ipv4             ipv6"
-  echo "gateway   10.88.100.1      fd10:88:100::1"
-  echo "subnet    10.88.100.0/23   fd10:88:100::/64"
-  echo "iprange   10.88.101.0/24   fd10:88:100::11:0/112"
 
   echo "检测到 IPv4 Gateway: $gateway"
   read -p "按回车确认，输入其他以修改: " input_gateway
@@ -233,7 +233,7 @@ function create_macvlan() {
   iprangev4=$(echo $iprange | cut -d'/' -f1)
   subnet4=$(echo $iprange | cut -d'/' -f2)
 
-  # ========== 4. 获取 IPv6 ==========
+  # 获取IPv6信息
   ip6_info=$(ip -6 addr show $networkcard | grep -w inet6 | grep fd | head -n1)
   if [ -n "$ip6_info" ]; then
     ip6_cidr=$(echo $ip6_info | awk '{print $2}')
@@ -255,49 +255,57 @@ function create_macvlan() {
   read -p "按回车确认，输入其他以修改: " input_cidr6
   [ -n "$input_cidr6" ] && cidr6=$input_cidr6
 
-  read -p "请输入 macvlan IPv6 range: " iprange6
+  read -p "请输入 macvlan IPv6 range, 回车使用 $cidr6: " iprange6
+  [ -z "$iprange6" ] && iprange6=$cidr6
   subnet6=$(echo $iprange6 | cut -d'/' -f2)
   iprangev6_prefix=$(echo $iprange6 | cut -d'/' -f1)
   iprangev6_prefix=$(echo $iprangev6_prefix | rev | cut -d':' -f2- | rev):
 
-  # ========== 5. 计算 bridge 和 mihomo ==========
-  bridge="${iprangev4%.*}.254"
-  mihomo="${iprangev4%.*}.120"
-
-  ipv4_fourth=$(echo $bridge | cut -d'.' -f4)
-  bridge6="${iprangev6_prefix}${ipv4_fourth}"
-
-  bridgemac=$(ip_to_mac $bridge)
-
-  # ========== 6. 输出变量 ==========
-  echo "macvlan参数确认："
-  echo "host ip：$ip $ip6"
-  echo "gateway：$gateway $gateway6"
-  echo "subnet：$cidr $cidr6"
-  echo "subnet4：$subnet4"
-  echo "subnet6：$subnet6"
-  echo "iprange：$iprange $iprange6"
-  echo "bridge：$bridge $bridge6    MAC: $bridgemac"
+  # 输出最终配置
+  echo "macvlan 参数确认："
+  echo "IPv4 gateway: $gateway"
+  echo "IPv4 subnet: $cidr"
+  echo "IPv4 range: $iprange"
+  echo "IPv6 gateway: $gateway6"
+  echo "IPv6 subnet: $cidr6"
+  echo "IPv6 range: $iprange6"
 
   read -p "是否正确？(y/n): " confirm
   if [ "$confirm" != "y" ]; then
-    echo "退出macvlan创建。"
+    echo "退出 macvlan 创建。"
     return 1
   fi
 
-  # ========== 7. daemon.json ========== 此段不能用，有冲突
-  # if [ ! -s /etc/docker/daemon.json ]; then
-  #   echo "{\"ipv6\": true, \"fixed-cidr-v6\": \"$iprange6\"}" | sudo tee /etc/docker/daemon.json
-  # else
-  #   sudo jq '. + {"ipv6":true,"fixed-cidr-v6":"'"$iprange6"'"}' /etc/docker/daemon.json > tmp.json && sudo mv tmp.json /etc/docker/daemon.json
-  # fi
-  # sudo systemctl restart docker
+  # 创建 docker macvlan 网络
+  echo "🔨 正在创建 docker macvlan 网络..."
+  docker network create -d macvlan \
+    --subnet=$cidr --ip-range=$iprange --gateway=$gateway \
+    --ipv6 --subnet=$cidr6 --gateway=$gateway6 \
+    -o parent=$networkcard macvlan
 
-  # ========== 8. 创建 macvlan ==========
-  echo "docker network create -d macvlan --subnet=\"$cidr\" --ip-range=\"$iprange\" --gateway=\"$gateway\" --ipv6 --subnet=\"$cidr6\" --gateway=\"$gateway6\" -o parent=\"$networkcard\" macvlan"
-  docker network create -d macvlan --subnet=$cidr --ip-range=$iprange --gateway=$gateway --ipv6 --subnet=$cidr6 --gateway=$gateway6 -o parent=$networkcard macvlan
+  echo "✅ macvlan 网络创建完成"
+}
 
-  # ========== 9. macvlan 互通 ==========
+# ========== 2. 配置 macvlan bridge 与 systemd ==========
+function create_macvlan_bridge() {
+
+  if [ -z "$iprangev4" ] || [ -z "$iprangev6_prefix" ]; then
+    echo "❌ 变量 iprangev4 或 iprangev6_prefix 未初始化，请先创建macvlan"
+    return 1
+  fi
+
+  echo "🔧 正在配置 macvlan bridge 互通"
+
+  # 计算 bridge IP 和 MAC
+  bridge="${iprangev4%.*}.254"
+  ipv4_fourth=$(echo $bridge | cut -d'.' -f4)
+  bridge6="${iprangev6_prefix}${ipv4_fourth}"
+  bridge_mac=$(ip_to_mac $bridge)
+
+  # 计算 mihomo IP（示例: 120作为固定最后段）
+  mihomo="${iprangev4%.*}.120"
+
+  # 生成 macvlan-setup.sh
   cat <<EOF | sudo tee /usr/local/bin/macvlan-setup.sh
 #!/bin/bash
 ip link del macvlan-bridge 2>/dev/null
@@ -313,7 +321,7 @@ EOF
 
   chmod +x /usr/local/bin/macvlan-setup.sh
 
-  # ========== 10. systemd ==========
+  # 配置 systemd service
   cat <<EOF | sudo tee /etc/systemd/system/macvlan.service
 [Unit]
 Description=Setup macvlan interface
@@ -332,6 +340,8 @@ EOF
   sudo systemctl enable macvlan.service
   sudo systemctl start macvlan.service
   sudo systemctl status macvlan.service
+
+  echo "✅ macvlan bridge 配置完成并已写入 systemd"
 }
 
 function install_mihomo() {
@@ -466,6 +476,12 @@ function calculate_ip_mac() {
 
   local last_octet=$1
 
+  if [[ ! "$last_octet" =~ ^[0-9]+$ ]]; then
+    echo "❌ calculate_ip_mac 输入无效: $last_octet"
+    return 1
+  fi
+
+
   # 1. 获取 docker macvlan 网络配置
   network_info=$(docker network inspect macvlan)
 
@@ -495,10 +511,6 @@ function calculate_ip_mac() {
   fi
 
   # 4. MAC 生成
-  ip_to_mac() {
-    IFS='.' read -r ip1 ip2 ip3 ip4 <<< "$1"
-    printf '86:88:%02x:%02x:%02x:%02x\n' $ip1 $ip2 $ip3 $ip4
-  }
   mac=$(ip_to_mac $ip)
 
   # 5. 输出
@@ -516,26 +528,54 @@ function calculate_ip_mac() {
 }
 
 
-function clean_macvlan() {
-    echo "正在清理macvlan bridge 和 docker macvlan网络..."
-    sudo ip link del macvlan-bridge 2>/dev/null
-    sudo systemctl stop macvlan.service
-    sudo systemctl disable macvlan.service
-    sudo rm /etc/systemd/system/macvlan.service
-    docker network rm macvlan
-    sudo rm /usr/local/bin/macvlan-setup.sh
-    sudo systemctl daemon-reload
+# ========== 删除 docker macvlan 网络 ==========
+function clean_macvlan_network() {
+  echo "🧹 正在删除 docker macvlan 网络配置..."
+
+  # 删除 docker macvlan 网络
+  docker network rm macvlan 2>/dev/null
+
+  # 删除 docker daemon ipv6 配置（如存在）
+  if [ -f /etc/docker/daemon.json ]; then
     sudo rm /etc/docker/daemon.json
     sudo systemctl restart docker
-    # 清理路由
-    for prefix in fd10 fd17 fd19; do
-        ip -6 route | grep "^$prefix" | awk '{print $1}' | while read route; do
-            sudo ip -6 route del $route
-        done
-    done
+    echo "✅ 已删除 /etc/docker/daemon.json 并重启 docker"
+  fi
 
-    echo "macvlan 和 macvlan bridge 已清理完成。"
+  # 清理 IPv6 路由中 fd10 / fd17 / fd19 前缀
+  for prefix in fd10 fd17 fd19; do
+    ip -6 route | grep "^$prefix" | awk '{print $1}' | while read route; do
+      sudo ip -6 route del $route
+      echo "🗑️ 已删除 IPv6 路由: $route"
+    done
+  done
+
+  echo "✅ docker macvlan 网络清理完成"
 }
+
+# ========== 删除 macvlan bridge 配置 ==========
+function clean_macvlan_bridge() {
+  echo "🧹 正在删除 macvlan bridge 配置..."
+
+  # 删除 macvlan bridge 网络接口
+  sudo ip link del macvlan-bridge 2>/dev/null
+
+  # 停止并禁用 systemd 服务
+  sudo systemctl stop macvlan.service
+  sudo systemctl disable macvlan.service
+
+  # 删除 systemd 服务文件
+  sudo rm /etc/systemd/system/macvlan.service
+
+  # 删除 macvlan-setup.sh 脚本
+  sudo rm /usr/local/bin/macvlan-setup.sh
+
+  # 重载 systemd
+  sudo systemctl daemon-reload
+
+  echo "✅ macvlan bridge 配置已删除"
+}
+
 
 # ========== 主循环 ==========
 
@@ -552,13 +592,15 @@ while true; do
         4) docker_info ;;
         5) format_disk ;;
         7) install_docker ;;
-        8) create_macvlan ;;
-        9) clean_macvlan ;;
+        8) create_macvlan_network ;;
         10) install_portainer_watchtower ;;
         11) install_librespeed ;;
         14) install_adguardhome ;;
         19) install_mosdns ;;
         20) install_mihomo ;;
+        80) create_macvlan_bridge ;;
+        90) clean_macvlan_bridge ;;
+        91) clean_macvlan_network ;;
         99) echo "退出脚本。"; exit 0 ;;
         *) echo "无效选项，请重新输入。" ;;
     esac
