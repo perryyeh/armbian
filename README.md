@@ -14,20 +14,26 @@
 
 ## 🧱 脚本菜单说明
 
-- 0）显示菜单
-- 1）显示操作系统信息
-- 2）显示网卡信息
-- 3）显示磁盘信息
-- 4）显示docker信息
-- 5）安装docker
-- 6）安装portainer面板和watchtower自动更新
-- 7）开启ipv6并创建macvlan
-- 9）清理macvlan和macvlan bridge
-- 11）安装librespeed测速
-- 14）安装adguardhome
-- 19）安装mosdns
-- 20）安装mihomo
-- 99）退出
+## 🗂️ 脚本功能目录
+
+| 序号 | 功能描述 |
+|---|---|
+| 0 | 显示菜单 |
+| 1 | 显示操作系统信息 |
+| 2 | 显示网卡信息 |
+| 3 | 显示磁盘信息 |
+| 4 | 显示 Docker 信息 |
+| 5 | 格式化磁盘并挂载 |
+| 7 | 安装 Docker |
+| 8 | 开启 IPv6 并创建 macvlan |
+| 9 | 清理 macvlan 和 macvlan bridge |
+| 10 | 安装 Portainer 面板和 Watchtower 自动更新 |
+| 11 | 安装 LibreSpeed 测速 |
+| 14 | 安装 AdGuardHome |
+| 19 | 安装 mosdns |
+| 20 | 安装 mihomo |
+| 99 | 退出脚本 |
+
 
 ---
 
