@@ -43,6 +43,7 @@ function show_menu() {
     echo "19）安装mosdns"
     echo "20）安装mihomo"
     echo "80）创建macvlan bridge"
+    echo "88）强制使用watchtower更新一次镜像"
     echo "90）清理macvlan bridge"
     echo "91）清理macvlan"
     echo "99）退出"
@@ -579,6 +580,13 @@ function clean_macvlan_bridge() {
   echo "✅ macvlan bridge 配置已删除"
 }
 
+function run_watchtower_once() {
+    echo "🔧 正在执行 watchtower --run-once 更新所有容器..."
+    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --run-once
+    echo "✅ watchtower 更新完成"
+}
+
+
 
 # ========== 主循环 ==========
 
@@ -602,6 +610,7 @@ while true; do
         19) install_mosdns ;;
         20) install_mihomo ;;
         80) create_macvlan_bridge ;;
+        88) run_watchtower_once ;;
         90) clean_macvlan_bridge ;;
         91) clean_macvlan_network ;;
         99) echo "退出脚本。"; exit 0 ;;
