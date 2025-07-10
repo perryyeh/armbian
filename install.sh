@@ -293,6 +293,53 @@ function create_macvlan_network() {
 # ========== 2. 配置 macvlan bridge 与 systemd ==========
 function create_macvlan_bridge() {
 
+  # 如果 networkcard 未定义，提示用户选择
+  if [ -z "$networkcard" ]; then
+    echo "🔍 未检测到 networkcard，请选择网卡："
+
+    # 获取所有物理网卡列表
+    interfaces=($(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo\|docker\|veth'))
+
+    # 显示选项
+    for i in "${!interfaces[@]}"; do
+      echo "$i) ${interfaces[$i]}"
+    done
+
+    # 用户输入
+    read -p "请输入网卡编号: " choice
+    networkcard=${interfaces[$choice]}
+
+    echo "✅ 已选择网卡: $networkcard"
+  fi
+
+  # 如果 subnet4/subnet6 未定义，尝试从 docker macvlan network 重新获取
+  if [ -z "$iprangev4" ] || [ -z "$subnet4" ] || [ -z "$iprangev6_prefix" ] || [ -z "$subnet6" ]; then
+    echo "🔍 正在从 docker macvlan network 获取配置..."
+    network_info=$(docker network inspect macvlan 2>/dev/null)
+
+    if [ -z "$network_info" ] || [ "$network_info" == "[]" ]; then
+      echo "❌ 未检测到 macvlan docker network，请先创建 macvlan 网络。"
+      return 1
+    fi
+
+    iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .IPRange')
+    iprange6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet')
+
+    iprangev4=$(echo $iprange | cut -d'/' -f1)
+    subnet4=$(echo $iprange | cut -d'/' -f2)
+
+    iprangev6_prefix=$(echo $iprange6 | cut -d'/' -f1)
+    subnet6=$(echo $iprange6 | cut -d'/' -f2)
+
+    echo "✅ IPv4 range: $iprangev4/$subnet4"
+    echo "✅ IPv6 prefix: $iprangev6_prefix/$subnet6"
+  fi
+
+
+  calculate_ip_mac 120
+  # 计算 mihomo IP（示例: 120作为固定最后段）
+  mihomo=$calculated_ip
+
   if [ -z "$iprangev4" ] || [ -z "$iprangev6_prefix" ]; then
     echo "❌ 变量 iprangev4 或 iprangev6_prefix 未初始化，请先创建macvlan"
     return 1
@@ -305,9 +352,6 @@ function create_macvlan_bridge() {
   ipv4_fourth=$(echo $bridge | cut -d'.' -f4)
   bridge6="${iprangev6_prefix}${ipv4_fourth}"
   bridge_mac=$(ip_to_mac $bridge)
-
-  # 计算 mihomo IP（示例: 120作为固定最后段）
-  mihomo="${iprangev4%.*}.120"
 
   # 生成 macvlan-setup.sh
   cat <<EOF | sudo tee /usr/local/bin/macvlan-setup.sh
