@@ -42,6 +42,7 @@ function show_menu() {
     echo "14）安装adguardhome"
     echo "19）安装mosdns"
     echo "20）安装mihomo"
+    echo "45）安装samba"
     echo "80）创建macvlan bridge"
     echo "88）强制使用watchtower更新一次镜像"
     echo "90）清理macvlan bridge"
@@ -392,7 +393,7 @@ EOF
   echo "✅ macvlan bridge 配置完成并已写入 systemd"
 }
 
-function install_mihomo() {
+install_mihomo() {
     calculate_ip_mac 120
     mihomo=$calculated_ip
     mihomo6=$calculated_ip6
@@ -402,22 +403,108 @@ function install_mihomo() {
     read -p "即将安装mihomo，请输入存储目录(例如 /data/dockerapps): " dockerapps
     cd ${dockerapps}
 
-    # 如果 mihomo 目录已存在则先删除
+    # 删除旧目录
     if [ -d "${dockerapps}/mihomo" ]; then
       echo "⚠️ 检测到 ${dockerapps}/mihomo 已存在，正在删除..."
       rm -rf ${dockerapps}/mihomo
     fi
 
+    # 拉取配置仓库
     git clone https://github.com/perryyeh/mihomo.git
-    sed -i "s/10.0.0.1/$gateway/g" ${dockerapps}/mihomo/config.yaml
 
-    docker run -d --name=mihomo --hostname=mihomo --restart=always --network=macvlan \
-    --ip=${mihomo} --ip6=${mihomo6} --mac-address=${mihomomac} \
-    --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.default.disable_ipv6=0 \
-    --device=/dev/net/tun --cap-add=NET_ADMIN \
-    -v ${dockerapps}/mihomo:/root/.config/mihomo metacubex/mihomo
+    cd ${dockerapps}/mihomo
 
-    echo "mihomo 访问地址：http://$mihomo:9090/ui/  密码：admin"
+    # 替换 config.yaml 里的网关
+    sed -i "s/10.0.0.1/$gateway/g" config.yaml
+
+    # 生成 .env 文件供 docker compose 使用
+    cat > .env <<EOF
+mihomo4=${mihomo}
+mihomo6=${mihomo6}
+mihomomac=${mihomomac}
+dockerapps=${dockerapps}
+EOF
+
+    echo "✅ 已生成 .env 文件："
+    cat .env
+    echo
+
+    # 检查 docker-compose.yml
+    if [ ! -f docker-compose.yml ]; then
+      echo "❌ 未找到 docker-compose.yml，请确认仓库中已包含该文件"
+      return 1
+    fi
+
+    # 启动容器
+    docker compose up -d
+
+    echo "mihomo 已启动！访问地址：http://$mihomo:9090/ui/  密码：admin"
+}
+
+install_samba() {
+    # 1. 固定用 host-id 145 来算 IP / MAC
+    calculate_ip_mac 145
+    samba4=$calculated_ip
+    samba6=$calculated_ip6
+    sambamac=$calculated_mac
+
+    # 2. 收集参数
+    read -p "请输入 Docker 应用存储目录(例如 /data/dockerapps): " dockerapps
+    read -p "请输入要共享的实际路径(例如 /data/nvr/samba): " smb_storage
+    read -p "请输入 Samba 用户名: " smb_user
+    read -s -p "请输入 Samba 密码: " smb_pass
+    echo
+    read -p "请输入共享名称(默认 Data): " smb_name
+    smb_name=${smb_name:-Data}
+
+    appdir="${dockerapps}/samba"
+
+    # 3. 如果目录已存在，先删掉再 clone
+    if [ -d "${appdir}" ]; then
+        echo "⚠️ 检测到 ${appdir} 已存在，正在删除..."
+        rm -rf "${appdir}"
+    fi
+
+    # 4. 克隆官方仓库（目录名就是 samba）
+    git clone https://github.com/perryyeh/samba.git "${appdir}"
+
+    cd "${appdir}" || return 1
+
+    # 5. 确认 docker-compose.yml 存在（你已经在仓库里把它改成带 macvlan / ipv4 / ipv6 / mac 的版本）
+    if [ ! -f docker-compose.yml ]; then
+        echo "❌ 未找到 ${appdir}/docker-compose.yml，请确认你已经在仓库里放好了 compose 文件"
+        return 1
+    fi
+
+    # 6. 生成 .env，给 docker compose 用
+    cat > .env <<EOF
+samba4=${samba4}
+samba6=${samba6}
+sambamac=${sambamac}
+
+SMB_NAME=${smb_name}
+SMB_USER=${smb_user}
+SMB_PASS=${smb_pass}
+SMB_STORAGE=${smb_storage}
+SMB_PORT=445
+EOF
+
+    echo "✅ 已生成 ${appdir}/.env："
+    cat .env
+    echo
+
+    # 7. 启动容器
+    docker compose up -d
+
+    echo "✅ Samba 容器已启动："
+    echo "  IPv4 地址 : ${samba4}"
+    echo "  IPv6 地址 : ${samba6}"
+    echo "  MAC 地址  : ${sambamac}"
+    echo "  共享名称  : ${smb_name}"
+    echo "  用户名    : ${smb_user}"
+    echo "  密码      : ${smb_pass}"
+    echo "  宿主路径  : ${smb_storage}"
+    echo "  端口      : 445"
 }
 
 function install_mosdns() {
@@ -653,6 +740,7 @@ while true; do
         14) install_adguardhome ;;
         19) install_mosdns ;;
         20) install_mihomo ;;
+        45) install_samba ;;
         80) create_macvlan_bridge ;;
         88) run_watchtower_once ;;
         90) clean_macvlan_bridge ;;
