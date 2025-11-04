@@ -455,7 +455,6 @@ install_samba() {
     read -s -p "请输入 Samba 密码: " smb_pass
     echo
     read -p "请输入共享名称(默认 Data): " smb_name
-    smb_name=${smb_name:-Data}
 
     appdir="${dockerapps}/samba"
 
