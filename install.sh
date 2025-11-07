@@ -36,7 +36,7 @@ function show_menu() {
     echo "4）显示docker信息"
     echo "5）格式化磁盘并挂载"
     echo "7）安装docker"
-    echo "8）开启ipv6并创建macvlan"
+    echo "8）创建macvlan（包括ipv4+ipv6）"
     echo "10）安装portainer面板和watchtower自动更新"
     echo "11）安装librespeed测速"
     echo "14）安装adguardhome"
@@ -204,12 +204,12 @@ get_subnet_v4() {
 function create_macvlan_network() {
   echo "🔧 开始创建 macvlan 网络"
 
-  # 列出所有网卡供用户选择
+  # 列出所有网卡供用户选择（尽量选择物理口）
   interfaces=($(ls /sys/class/net))
   echo "请选择【物理】网卡："
   for i in "${!interfaces[@]}"; do
-    ip4=$(ip -4 addr show "${interfaces[$i]}" | grep -w inet | awk '{print $2}')
-    ip6=$(ip -6 addr show "${interfaces[$i]}" | grep -w inet6 | grep fd | awk '{print $2}')
+    ip4=$(ip -4 addr show ${interfaces[$i]} | grep -w inet | awk '{print $2}')
+    ip6=$(ip -6 addr show ${interfaces[$i]} | grep -w inet6 | grep fd | awk '{print $2}')
     echo "$i) ${interfaces[$i]}  IPv4: ${ip4:-无}  IPv6: ${ip6:-无}"
   done
 
@@ -217,7 +217,7 @@ function create_macvlan_network() {
   networkcard=${interfaces[$netcard_index]}
   echo "选择的网卡: $networkcard"
 
-  # ==== VLAN 处理 ====
+  # ========= VLAN 处理 =========
   vlan_id=""
   if [[ "$networkcard" != *.* ]]; then
     read -p "是否为 macvlan 使用 VLAN ID？直接回车表示不使用，输入 VLAN ID（例如 88）: " vlan_id
@@ -233,83 +233,180 @@ function create_macvlan_network() {
       networkcard="$vlan_iface"
     fi
   else
-    # 如果用户直接选的是 eth0.88 这种，尝试自动提取 VLAN ID，仅用于命名
+    # 用户直接选的是 eth0.8 这种
     vlan_suffix="${networkcard#*.}"
     if [[ "$vlan_suffix" =~ ^[0-9]+$ ]]; then
       vlan_id="$vlan_suffix"
     fi
-    echo "ℹ️ 检测到带 VLAN 的接口: $networkcard"
+    echo "ℹ️ 检测到带 VLAN 的接口: $networkcard (推测 VLAN ID: ${vlan_id:-未知})"
   fi
-  # ==== VLAN 处理结束 ====
+  # ========= VLAN 处理结束 =========
 
-  # 获取 IPv4 地址
+  # ========= IPv4：先网关，再算 CIDR & range =========
   ip=$(ip -4 addr show "$networkcard" | grep -w inet | head -n1 | awk '{print $2}' | cut -d'/' -f1)
-  if [ -z "$ip" ]; then
-    echo "❌ 未在接口 $networkcard 上检测到 IPv4 地址，请先配置好地址。"
+
+  suggest_gateway=""
+  suggest_prefixlen=""
+
+  if [ -n "$ip" ]; then
+    # 接口本身有 IP，直接用它的网关/前缀
+    cidr_from_iface=$(get_subnet_v4 "$ip" "$networkcard")
+    gw_from_iface=$(ip route | grep "^default" | grep "dev $networkcard" | awk '{print $3}')
+    suggest_gateway="$gw_from_iface"
+    suggest_prefixlen="${cidr_from_iface#*/}"  # 例如 23 / 24
+  else
+    echo "⚠️ 未在接口 $networkcard 上检测到 IPv4 地址（VLAN 接口通常没有 IP）"
+
+    parent_iface=${networkcard%%.*}
+    parent_ip=$(ip -4 addr show "$parent_iface" | grep -w inet | head -n1 | awk '{print $2}' | cut -d'/' -f1)
+
+    if [ -n "$parent_ip" ]; then
+      parent_cidr=$(get_subnet_v4 "$parent_ip" "$parent_iface")
+      parent_net=${parent_cidr%/*}
+      parent_mask=${parent_cidr#*/}
+
+      IFS='.' read -r p1 p2 p3 p4 <<< "$parent_net"
+
+      # 策略：沿用前两段，第三段用 VLAN ID（没有 VLAN 就用原来的）
+      if [ -n "$vlan_id" ]; then
+        third_octet=$vlan_id
+      else
+        third_octet=$p3
+      fi
+
+      suggest_gateway="${p1}.${p2}.${third_octet}.1"
+      # VLAN 场景默认 /24；无 VLAN 就沿用原掩码
+      if [ -n "$vlan_id" ]; then
+        suggest_prefixlen="24"
+      else
+        suggest_prefixlen="$parent_mask"
+      fi
+
+      echo "👉 已根据 trunk 接口 $parent_iface 推算推荐 IPv4 网关：$suggest_gateway"
+      echo "👉 推荐前缀长度：/$suggest_prefixlen"
+    else
+      echo "❌ trunk 接口 $parent_iface 也没有 IPv4，无法推算，需要手动输入网关和网段。"
+    fi
+  fi
+
+  # 先确认 / 覆盖 IPv4 网关
+  if [ -n "$suggest_gateway" ]; then
+    read -p "请输入 IPv4 网关 (回车使用推荐 $suggest_gateway): " input_gateway
+    if [ -n "$input_gateway" ]; then
+      gateway="$input_gateway"
+    else
+      gateway="$suggest_gateway"
+    fi
+  else
+    read -p "请输入 IPv4 网关 (例如 10.88.0.1): " gateway
+  fi
+
+  if [ -z "$gateway" ]; then
+    echo "❌ IPv4 网关不能为空。"
     return 1
   fi
 
-  # 计算 IPv4 子网 & 网关
-  cidr=$(get_subnet_v4 "$ip" "$networkcard")
-  gateway=$(ip route | grep "^default" | grep "dev $networkcard" | awk '{print $3}')
+  # 根据网关自动推算子网 CIDR（默认网关所在网段 .0/前缀）
+  gw_net_ip="${gateway%.*}.0"
+  prefixlen="${suggest_prefixlen:-24}"
+  auto_cidr="${gw_net_ip}/${prefixlen}"
 
-  echo "检测到 IPv4 Gateway: ${gateway:-<未检测到>}"
-  read -p "按回车确认，输入其他以修改: " input_gateway
-  [ -n "$input_gateway" ] && gateway=$input_gateway
+  echo "👉 已根据网关 $gateway 自动推算 IPv4 子网：$auto_cidr"
 
-  echo "检测到 IPv4 Subnet: $cidr"
-  read -p "按回车确认，输入其他以修改: " input_cidr
-  [ -n "$input_cidr" ] && cidr=$input_cidr
+  # 用户可再覆盖 IPv4 子网
+  read -p "请输入 macvlan IPv4 子网CIDR (回车使用推荐 $auto_cidr): " input_cidr
+  if [ -n "$input_cidr" ]; then
+    cidr="$input_cidr"
+  else
+    cidr="$auto_cidr"
+  fi
 
+  # IPv4 range 默认等于子网
   read -p "请输入 macvlan IPv4 range, 回车使用 $cidr: " iprange
   [ -z "$iprange" ] && iprange=$cidr
   iprangev4=$(echo "$iprange" | cut -d'/' -f1)
   subnet4=$(echo "$iprange" | cut -d'/' -f2)
 
-  # ---------- IPv6 ----------
+  # ========= IPv6：同样先网关，再算 CIDR & range =========
+  suggest_gateway6=""
+  suggest_cidr6=""
+
+  # 优先从接口现有 IPv6 计算
   ip6_info=$(ip -6 addr show "$networkcard" | grep -w inet6 | grep fd | head -n1 || true)
   if [ -n "$ip6_info" ]; then
     ip6_cidr=$(echo "$ip6_info" | awk '{print $2}')
     ip6=$(echo "$ip6_cidr" | cut -d'/' -f1)
-    prefix_len=$(echo "$ip6_cidr" | cut -d'/' -f2)
+    prefix_len6=$(echo "$ip6_cidr" | cut -d'/' -f2)
     ip6_prefix=$(echo "$ip6" | cut -d':' -f1-4)
-    cidr6="${ip6_prefix}::/${prefix_len}"
-    gateway6="${ip6_prefix}::1"
+    suggest_cidr6="${ip6_prefix}::/${prefix_len6}"
+    suggest_gateway6="${ip6_prefix}::1"
   else
+    # 没有现成 IPv6，就按你的原逻辑，用 IPv4 网关推一个 ULA 前缀（fdxx:...）
     if [ -n "$gateway" ]; then
       prefix6=$(ipv4_to_ipv6_prefix "$gateway")
-      cidr6="${prefix6}::/64"
-      gateway6="${prefix6}::1"
-    else
-      cidr6=""
-      gateway6=""
+      suggest_cidr6="${prefix6}::/64"
+      suggest_gateway6="${prefix6}::1"
     fi
   fi
 
-  echo "检测到 IPv6 Gateway: ${gateway6:-<未检测到>}"
-  read -p "按回车确认，输入其他以修改: " input_gateway6
-  [ -n "$input_gateway6" ] && gateway6=$input_gateway6
+  # 先让用户确认 / 覆盖 IPv6 网关
+  if [ -n "$suggest_gateway6" ]; then
+    echo "检测到/推算 IPv6 Gateway: $suggest_gateway6"
+    read -p "请输入 IPv6 网关 (回车使用推荐 $suggest_gateway6，留空表示不启用IPv6): " input_gateway6
+    if [ -n "$input_gateway6" ]; then
+      gateway6="$input_gateway6"
+    else
+      gateway6="$suggest_gateway6"
+    fi
+  else
+    read -p "请输入 IPv6 网关 (例如 fd10:86:28::1，留空表示不启用IPv6): " gateway6
+  fi
 
-  echo "检测到 IPv6 Subnet: $cidr6"
-  read -p "按回车确认，输入其他以修改: " input_cidr6
-  [ -n "$input_cidr6" ] && cidr6=$input_cidr6
+  # 如果用户留空 IPv6 网关，则不配置 IPv6
+  if [ -z "$gateway6" ]; then
+    cidr6=""
+    iprange6=""
+    subnet6=""
+    iprangev6_prefix=""
+  else
+    # 基于当前网关6和已有前缀建议，推一个 CIDR
+    if [ -n "$suggest_cidr6" ]; then
+      auto_cidr6="$suggest_cidr6"
+    else
+      # 没有任何前缀建议时，简单取 IPv4 对应前缀 + /64
+      prefix6=$(ipv4_to_ipv6_prefix "$gateway")
+      auto_cidr6="${prefix6}::/64"
+    fi
 
-  read -p "请输入 macvlan IPv6 range, 回车使用 $cidr6: " iprange6
-  [ -z "$iprange6" ] && iprange6=$cidr6
-  subnet6=$(echo "$iprange6" | cut -d'/' -f2)
-  iprangev6_prefix=$(echo "$iprange6" | cut -d'/' -f1)
-  iprangev6_prefix=$(echo "$iprangev6_prefix" | rev | cut -d':' -f2- | rev):
+    echo "👉 已根据 IPv6 网关 $gateway6 自动/推算 IPv6 子网：$auto_cidr6"
+    read -p "请输入 IPv6 子网CIDR (回车使用推荐 $auto_cidr6): " input_cidr6
+    if [ -n "$input_cidr6" ]; then
+      cidr6="$input_cidr6"
+    else
+      cidr6="$auto_cidr6"
+    fi
 
-  # ---------- 确认参数 ----------
+    read -p "请输入 macvlan IPv6 range, 回车使用 $cidr6: " iprange6
+    [ -z "$iprange6" ] && iprange6=$cidr6
+    subnet6=$(echo "$iprange6" | cut -d'/' -f2)
+    iprangev6_prefix=$(echo "$iprange6" | cut -d'/' -f1)
+    iprangev6_prefix=$(echo "$iprangev6_prefix" | rev | cut -d':' -f2- | rev):
+  fi
+
+  # ========= 最终确认 =========
   echo "macvlan 参数确认："
-  echo " Parent 接口 : $networkcard"
-  [ -n "$vlan_id" ] && echo " VLAN ID      : $vlan_id"
-  echo " IPv4 gateway : $gateway"
-  echo " IPv4 subnet  : $cidr"
-  echo " IPv4 range   : $iprange"
-  echo " IPv6 gateway : $gateway6"
-  echo " IPv6 subnet  : $cidr6"
-  echo " IPv6 range   : $iprange6"
+  [ -n "$vlan_id" ] && echo "VLAN ID     : $vlan_id"
+  echo "Parent 接口 : $networkcard"
+  echo "IPv4 gateway: $gateway"
+  echo "IPv4 subnet : $cidr"
+  echo "IPv4 range  : $iprange"
+  if [ -n "$gateway6" ]; then
+    echo "IPv6 gateway: $gateway6"
+    echo "IPv6 subnet : $cidr6"
+    echo "IPv6 range  : $iprange6"
+  else
+    echo "IPv6        : 不启用"
+  fi
 
   read -p "是否正确？(y/n): " confirm
   if [ "$confirm" != "y" ]; then
@@ -329,10 +426,16 @@ function create_macvlan_network() {
 
   # 创建 docker macvlan 网络
   echo "🔨 正在创建 docker macvlan 网络：$network_name ..."
-  docker network create -d macvlan \
-    --subnet="$cidr" --ip-range="$iprange" --gateway="$gateway" \
-    --ipv6 --subnet="$cidr6" --gateway="$gateway6" \
-    -o parent="$networkcard" "$network_name"
+  if [ -n "$gateway6" ] && [ -n "$cidr6" ]; then
+    docker network create -d macvlan \
+      --subnet="$cidr" --ip-range="$iprange" --gateway="$gateway" \
+      --ipv6 --subnet="$cidr6" --gateway="$gateway6" \
+      -o parent="$networkcard" "$network_name"
+  else
+    docker network create -d macvlan \
+      --subnet="$cidr" --ip-range="$iprange" --gateway="$gateway" \
+      -o parent="$networkcard" "$network_name"
+  fi
 
   echo "✅ macvlan 网络创建完成：$network_name"
 }
@@ -519,20 +622,71 @@ EOF
     echo "mihomo 已启动！访问地址：http://$mihomo:9090/ui/  密码：admin"
 }
 
+# 安装samba
 install_samba() {
-    # 1. 固定用 host-id 145 来算 IP / MAC
-    calculate_ip_mac 145
-    samba4=$calculated_ip
-    samba6=$calculated_ip6
-    sambamac=$calculated_mac
+    echo "🔧 开始安装 Samba（基于 macvlan 独立 IP）"
 
-    # 2. 收集参数
+    # 0. 选择要使用的 macvlan 网络
+    echo "可用的 macvlan 网络："
+    docker network ls --format '{{.Name}}' | grep '^macvlan' || echo "  （当前没有名称包含 macvlan 的网络，请先创建）"
+
+    read -p "请输入要使用的 macvlan 网络名（回车默认 macvlan）: " macvlan_name
+    macvlan_name=${macvlan_name:-macvlan}
+
+    # 读取该 macvlan 网络配置
+    network_info=$(docker network inspect "$macvlan_name" 2>/dev/null)
+    if [ -z "$network_info" ] || [ "$network_info" = "[]" ]; then
+        echo "❌ 未检测到 docker 网络 $macvlan_name，请确认名称是否正确。"
+        return 1
+    fi
+
+    # ---- 解析 IPv4 subnet & gateway ----
+    subnet4=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Subnet // empty')
+    gw4=$(echo "$network_info"      | jq -r '.[0].IPAM.Config[] | select(.Gateway | test(":") | not) | .Gateway // empty')
+
+    if [ -z "$subnet4" ] || [ "$subnet4" = "null" ]; then
+        echo "❌ 网络 $macvlan_name 未配置 IPv4 子网，无法为 Samba 分配地址。"
+        return 1
+    fi
+
+    subnet4_ip=$(echo "$subnet4" | cut -d'/' -f1)
+    subnet4_mask=$(echo "$subnet4" | cut -d'/' -f2)
+    base_v4_prefix="${subnet4_ip%.*}"   # 例如 10.86.28
+    last_octet=145
+    samba4="${base_v4_prefix}.${last_octet}"
+
+    # ---- 解析 IPv6 subnet & gateway（如有）----
+    subnet6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet // empty')
+    gw6=$(echo "$network_info"     | jq -r '.[0].IPAM.Config[] | select(.Gateway | test(":")) | .Gateway // empty')
+
+    samba6=""
+    subnet6_mask=""
+    if [ -n "$subnet6" ] && [ "$subnet6" != "null" ]; then
+        subnet6_ip=$(echo "$subnet6" | cut -d'/' -f1)
+        subnet6_mask=$(echo "$subnet6" | cut -d'/' -f2)
+
+        # 用 IPv6 子网地址的前缀 + host-id 145 生成地址
+        prefix6=$(echo "$subnet6_ip" | rev | cut -d':' -f2- | rev):
+        samba6="${prefix6}${last_octet}"
+    fi
+
+    # MAC 用工具函数 ip_to_mac 由 IPv4 生成（你脚本里已经有这个函数）
+    sambamac=$(ip_to_mac "$samba4")
+
+    echo "📡 选用的 macvlan 网络: $macvlan_name"
+    echo "📍 规划的 Samba 地址:"
+    echo "  IPv4 : $samba4/$subnet4_mask"
+    [ -n "$samba6" ] && echo "  IPv6 : $samba6/${subnet6_mask}"
+    echo "  MAC  : $sambamac"
+
+    # 2. 收集用户参数
     read -p "请输入 Docker 应用存储目录(例如 /data/dockerapps): " dockerapps
     read -p "请输入要共享的实际路径(例如 /data/nvr/samba): " smb_storage
     read -p "请输入 Samba 用户名: " smb_user
     read -s -p "请输入 Samba 密码: " smb_pass
     echo
     read -p "请输入共享名称(默认 Data): " smb_name
+    smb_name=${smb_name:-Data}
 
     appdir="${dockerapps}/samba"
 
@@ -542,12 +696,12 @@ install_samba() {
         rm -rf "${appdir}"
     fi
 
-    # 4. 克隆官方仓库（目录名就是 samba）
+    # 4. 克隆仓库（如果你用的是 dockurr 的官方仓库，就用这行）
     git clone https://github.com/perryyeh/samba.git "${appdir}"
 
     cd "${appdir}" || return 1
 
-    # 5. 确认 docker-compose.yml 存在（你已经在仓库里把它改成带 macvlan / ipv4 / ipv6 / mac 的版本）
+    # 5. 确认 docker-compose.yml 存在（已按上一条说明修改 networks 部分）
     if [ ! -f docker-compose.yml ]; then
         echo "❌ 未找到 ${appdir}/docker-compose.yml，请确认你已经在仓库里放好了 compose 文件"
         return 1
@@ -555,10 +709,15 @@ install_samba() {
 
     # 6. 生成 .env，给 docker compose 用
     cat > .env <<EOF
+# 选择使用的 macvlan 网络
+MACVLAN_NET=${macvlan_name}
+
+# 固定 IP / MAC
 samba4=${samba4}
 samba6=${samba6}
 sambamac=${sambamac}
 
+# Samba 配置
 SMB_NAME=${smb_name}
 SMB_USER=${smb_user}
 SMB_PASS=${smb_pass}
@@ -574,14 +733,15 @@ EOF
     docker compose up -d
 
     echo "✅ Samba 容器已启动："
-    echo "  IPv4 地址 : ${samba4}"
-    echo "  IPv6 地址 : ${samba6}"
-    echo "  MAC 地址  : ${sambamac}"
-    echo "  共享名称  : ${smb_name}"
-    echo "  用户名    : ${smb_user}"
-    echo "  密码      : ${smb_pass}"
-    echo "  宿主路径  : ${smb_storage}"
-    echo "  端口      : 445"
+    echo "  使用 macvlan 网络 : ${macvlan_name}"
+    echo "  IPv4 地址        : ${samba4}"
+    [ -n "$samba6" ] && echo "  IPv6 地址        : ${samba6}"
+    echo "  MAC 地址         : ${sambamac}"
+    echo "  共享名称         : ${smb_name}"
+    echo "  用户名           : ${smb_user}"
+    echo "  密码             : ${smb_pass}"
+    echo "  宿主路径         : ${smb_storage}"
+    echo "  端口             : 445"
 }
 
 function install_mosdns() {
