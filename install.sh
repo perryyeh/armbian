@@ -340,7 +340,7 @@ function create_macvlan_network() {
 # ========== 2. 配置 macvlan bridge 与 systemd ==========
 function create_macvlan_bridge() {
 
-  echo "🔧 配置 macvlan bridge 互通"
+  echo "🔧 配置 macvlan bridge 互通（支持多网段多 bridge 共存）"
 
   echo "可用的 macvlan 网络："
   docker network ls --format '{{.Name}}' | grep '^macvlan' || echo "  （当前没有名称包含 macvlan 的网络，请先创建）"
@@ -348,41 +348,42 @@ function create_macvlan_bridge() {
   read -p "请输入要配置 bridge 的 macvlan 网络名 (默认 macvlan): " macvlan_name
   macvlan_name=${macvlan_name:-macvlan}
 
-  # 从 docker network 读取配置
+  # 读取 docker network 配置
   network_info=$(docker network inspect "$macvlan_name" 2>/dev/null)
   if [ -z "$network_info" ] || [ "$network_info" = "[]" ]; then
     echo "❌ 未检测到 docker 网络 $macvlan_name，请确认名称是否正确。"
     return 1
   fi
 
-  # 解析 parent 接口（可能是 eth0，也可能是 eth0.88）
+  # 从 docker network 中解析 parent 接口（可能是 eth0 或 eth0.88 等）
   parent_from_docker=$(echo "$network_info" | jq -r '.[0].Options.parent // empty')
   if [ -n "$parent_from_docker" ] && [ "$parent_from_docker" != "null" ]; then
     networkcard="$parent_from_docker"
     echo "✅ 从 docker 网络中检测到 parent 接口: $networkcard"
   else
-    # 兜底：让用户手动选
-    if [ -z "$networkcard" ]; then
-      echo "🔍 未在 docker 配置中找到 parent，请手动选择网卡："
-      interfaces=($(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo\|docker\|veth'))
-      for i in "${!interfaces[@]}"; do
-        echo "$i) ${interfaces[$i]}"
-      done
-      read -p "请输入网卡编号: " choice
-      networkcard=${interfaces[$choice]}
-    fi
+    # 兜底：让用户手动选择
+    echo "🔍 未在 docker 配置中找到 parent，请手动选择网卡："
+    interfaces=($(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo\|docker\|veth'))
+    for i in "${!interfaces[@]}"; do
+      echo "$i) ${interfaces[$i]}"
+    done
+    read -p "请输入网卡编号: " choice
+    networkcard=${interfaces[$choice]}
     echo "✅ 已选择网卡: $networkcard"
   fi
 
-  # 解析 IPv4 / IPv6 网段
+  # 解析 IPv4 网段（优先 IPRange，其次 Subnet）
   iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .IPRange // empty')
   if [ -z "$iprange" ] || [ "$iprange" = "null" ]; then
     iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Subnet')
   fi
+
+  # 解析 IPv6 网段
   iprange6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet')
 
   iprangev4=$(echo "$iprange" | cut -d'/' -f1)
   subnet4=$(echo "$iprange" | cut -d'/' -f2)
+
   iprangev6_prefix=$(echo "$iprange6" | cut -d'/' -f1)
   subnet6=$(echo "$iprange6" | cut -d'/' -f2)
   iprangev6_prefix=$(echo "$iprangev6_prefix" | rev | cut -d':' -f2- | rev):
@@ -397,43 +398,62 @@ function create_macvlan_bridge() {
   echo " IPv4 range  : $iprangev4/$subnet4"
   echo " IPv6 prefix : $iprangev6_prefix/$subnet6"
 
-  # 获取 mihomo IP（仍然从默认 macvlan 网络计算 120 号，保持你原来的路由逻辑）
+  # 计算 mihomo IP（保持你原来的 120 号规则，用于 198.18/15 的路由）
   calculate_ip_mac 120
   mihomo=$calculated_ip
 
-  echo "🔧 正在配置 macvlan bridge 互通"
+  echo "🔧 正在为 $macvlan_name 配置独立的 macvlan bridge"
 
-  # 计算 bridge IP 和 MAC
+  # 每个 macvlan 网络有自己独立的 bridge / 脚本 / service
+  # 1) 生成安全的名字（把非字母数字变成下划线）
+  safe_name=$(echo "$macvlan_name" | sed 's/[^0-9A-Za-z]/_/g')
+
+  # 2) bridge 接口名（注意 Linux 接口名 <=15 字符，这里简单截断一下）
+  bridge_if_raw="mvbr_${safe_name}"
+  bridge_if=${bridge_if_raw:0:15}
+
+  # 3) 脚本和 service 名称
+  setup_script="/usr/local/bin/macvlan-${safe_name}.sh"
+  service_name="macvlan-${safe_name}.service"
+
+  echo " Bridge 接口 : $bridge_if"
+  echo " Setup 脚本  : $setup_script"
+  echo " Systemd 服务: $service_name"
+
+  # 计算 bridge IPv4 / IPv6 地址
   bridge="${iprangev4%.*}.254"
   ipv4_fourth=$(echo "$bridge" | cut -d'.' -f4)
   bridge6="${iprangev6_prefix}${ipv4_fourth}"
   bridge_mac=$(ip_to_mac "$bridge")
 
-  # 生成 macvlan-setup.sh
-  cat <<EOF | sudo tee /usr/local/bin/macvlan-setup.sh
+  echo " Bridge IPv4 : $bridge/$subnet4"
+  echo " Bridge IPv6 : $bridge6/$subnet6"
+
+  # 生成针对当前 macvlan 网络的专属 setup 脚本
+  cat <<EOF | sudo tee "$setup_script"
 #!/bin/bash
-ip link del macvlan-bridge 2>/dev/null
-ip link add macvlan-bridge link $networkcard type macvlan mode bridge
-ip addr add $bridge/$subnet4 dev macvlan-bridge
-ip -6 addr add $bridge6/$subnet6 dev macvlan-bridge
-ip link set macvlan-bridge up
-ip link set macvlan-bridge promisc on
-ip route replace $iprange dev macvlan-bridge
-ip -6 route replace $iprange6 dev macvlan-bridge
-ip route add 198.18.0.0/15 via $mihomo dev macvlan-bridge
+ip link del $bridge_if 2>/dev/null
+ip link add $bridge_if link $networkcard type macvlan mode bridge
+ip addr add $bridge/$subnet4 dev $bridge_if
+ip -6 addr add $bridge6/$subnet6 dev $bridge_if
+ip link set $bridge_if up
+ip link set $bridge_if promisc on
+ip route replace $iprange dev $bridge_if
+ip -6 route replace $iprange6 dev $bridge_if
+ip route add 198.18.0.0/15 via $mihomo dev $bridge_if
 EOF
 
-  sudo chmod +x /usr/local/bin/macvlan-setup.sh
+  sudo chmod +x "$setup_script"
 
-  # 配置 systemd service
-  cat <<EOF | sudo tee /etc/systemd/system/macvlan.service
+  # 为当前 macvlan 网络生成独立的 systemd 服务
+  cat <<EOF | sudo tee "/etc/systemd/system/${service_name}"
 [Unit]
-Description=Setup macvlan interface
+Description=Setup macvlan bridge for ${macvlan_name}
 After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/macvlan-setup.sh
+ExecStart=${setup_script}
 RemainAfterExit=yes
 
 [Install]
@@ -441,11 +461,14 @@ WantedBy=multi-user.target
 EOF
 
   sudo systemctl daemon-reload
-  sudo systemctl enable macvlan.service
-  sudo systemctl start macvlan.service
-  sudo systemctl status macvlan.service
+  sudo systemctl enable "${service_name}"
+  sudo systemctl start "${service_name}"
 
-  echo "✅ macvlan bridge 配置完成并已写入 systemd"
+  echo "✅ 已为 $macvlan_name 创建/启动独立的 bridge：$bridge_if"
+  echo "   - 脚本 : $setup_script"
+  echo "   - 服务 : $service_name"
+  echo "   - IPv4 : $bridge/$subnet4"
+  echo "   - IPv6 : $bridge6/$subnet6"
 }
 
 install_mihomo() {
