@@ -441,137 +441,195 @@ function create_macvlan_network() {
 }
 
 # ========== 2. 配置 macvlan bridge 与 systemd ==========
-function create_macvlan_bridge() {
+create_macvlan_bridge() {
+    echo "🔧 开始创建/更新 macvlan bridge（宿主机 <-> macvlan 网络互通）"
 
-  echo "🔧 配置 macvlan bridge 互通（支持多网段多 bridge 共存）"
+    # 1. 列出所有 macvlan 开头的 docker 网络
+    mapfile -t macvlan_networks < <(docker network ls --format '{{.Name}}' | grep '^macvlan' || true)
+    if [ ${#macvlan_networks[@]} -eq 0 ]; then
+        echo "❌ 未发现任何以 macvlan 开头的 Docker 网络，请先创建 macvlan 网络。"
+        return 1
+    fi
 
-  echo "可用的 macvlan 网络："
-  docker network ls --format '{{.Name}}' | grep '^macvlan' || echo "  （当前没有名称包含 macvlan 的网络，请先创建）"
-
-  read -p "请输入要配置 bridge 的 macvlan 网络名 (默认 macvlan): " macvlan_name
-  macvlan_name=${macvlan_name:-macvlan}
-
-  # 读取 docker network 配置
-  network_info=$(docker network inspect "$macvlan_name" 2>/dev/null)
-  if [ -z "$network_info" ] || [ "$network_info" = "[]" ]; then
-    echo "❌ 未检测到 docker 网络 $macvlan_name，请确认名称是否正确。"
-    return 1
-  fi
-
-  # 从 docker network 中解析 parent 接口（可能是 eth0 或 eth0.88 等）
-  parent_from_docker=$(echo "$network_info" | jq -r '.[0].Options.parent // empty')
-  if [ -n "$parent_from_docker" ] && [ "$parent_from_docker" != "null" ]; then
-    networkcard="$parent_from_docker"
-    echo "✅ 从 docker 网络中检测到 parent 接口: $networkcard"
-  else
-    # 兜底：让用户手动选择
-    echo "🔍 未在 docker 配置中找到 parent，请手动选择网卡："
-    interfaces=($(ip -o link show | awk -F': ' '{print $2}' | grep -v 'lo\|docker\|veth'))
-    for i in "${!interfaces[@]}"; do
-      echo "$i) ${interfaces[$i]}"
+    echo "可用的 macvlan 网络："
+    for i in "${!macvlan_networks[@]}"; do
+        echo "  $i) ${macvlan_networks[$i]}"
     done
-    read -p "请输入网卡编号: " choice
-    networkcard=${interfaces[$choice]}
-    echo "✅ 已选择网卡: $networkcard"
-  fi
 
-  # 解析 IPv4 网段（优先 IPRange，其次 Subnet）
-  iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .IPRange // empty')
-  if [ -z "$iprange" ] || [ "$iprange" = "null" ]; then
-    iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Subnet')
-  fi
+    read -p "请输入要配置 bridge 的 macvlan 序号(默认 0): " idx
+    idx=${idx:-0}
+    if ! [[ "$idx" =~ ^[0-9]+$ ]] || [ "$idx" -lt 0 ] || [ "$idx" -ge "${#macvlan_networks[@]}" ]; then
+        echo "❌ 输入序号无效。"
+        return 1
+    fi
 
-  # 解析 IPv6 网段
-  iprange6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet')
+    macvlan_name="${macvlan_networks[$idx]}"
+    echo "📡 选中的 macvlan 网络: $macvlan_name"
 
-  iprangev4=$(echo "$iprange" | cut -d'/' -f1)
-  subnet4=$(echo "$iprange" | cut -d'/' -f2)
+    # 2. 获取网络配置
+    network_info=$(docker network inspect "$macvlan_name" 2>/dev/null)
+    if [ -z "$network_info" ]; then
+        echo "❌ 无法 inspect Docker 网络：$macvlan_name"
+        return 1
+    fi
 
-  iprangev6_prefix=$(echo "$iprange6" | cut -d'/' -f1)
-  subnet6=$(echo "$iprange6" | cut -d'/' -f2)
-  iprangev6_prefix=$(echo "$iprangev6_prefix" | rev | cut -d':' -f2- | rev):
+    # parent 接口（例如 eth0.8）
+    parent_if=$(echo "$network_info" | jq -r '.[0].Options.parent // empty')
+    if [ -z "$parent_if" ] || [ "$parent_if" = "null" ]; then
+        echo "❌ 在 $macvlan_name 中未找到 parent 接口(Options.parent)，请检查该网络是否为 macvlan 类型。"
+        return 1
+    fi
+    echo "🔗 发现 parent 接口: $parent_if"
 
-  if [ -z "$iprangev4" ] || [ -z "$iprangev6_prefix" ]; then
-    echo "❌ 无法从 $macvlan_name 中解析到 IPv4/IPv6 网段，请确认网络配置。"
-    return 1
-  fi
+    # === IPv4 部分：Subnet + IPRange 组合使用 ===
+    # Subnet 用于路由，IPRange（如果有）用于决定 bridge IP 前缀
+    subnet4_cidr=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Subnet // empty' | head -n1)
+    if [ -z "$subnet4_cidr" ] || [ "$subnet4_cidr" = "null" ]; then
+        echo "❌ 无法从 $macvlan_name 中解析 IPv4 Subnet，请确认该网络配置了 IPv4。"
+        return 1
+    fi
+    echo "🌐 IPv4 子网(Subnet): $subnet4_cidr"
 
-  echo "使用 macvlan 网络: $macvlan_name"
-  echo " Parent 接口 : $networkcard"
-  echo " IPv4 range  : $iprangev4/$subnet4"
-  echo " IPv6 prefix : $iprangev6_prefix/$subnet6"
+    iprange4_cidr=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .IPRange // empty' | head -n1)
+    if [ -n "$iprange4_cidr" ] && [ "$iprange4_cidr" != "null" ]; then
+        echo "🌐 IPv4 IPRange: $iprange4_cidr"
+        base4="${iprange4_cidr%/*}"   # 例如 10.86.21.0
+    else
+        base4="${subnet4_cidr%/*}"    # 例如 10.86.21.0
+    fi
 
-  # 计算 mihomo IP（保持你原来的 120 号规则，用于 198.18/15 的路由）
-  calculate_ip_mac 120
-  mihomo=$calculated_ip
+    prefix4="${subnet4_cidr#*/}"      # 路由用 Subnet 掩码，例如 24
+    # 用 base 前 3 段 + .254 作为 bridge IP
+    bridge4="${base4%.*}.254"
+    bridge4_cidr="${bridge4}/${prefix4}"
+    echo "📍 计划 bridge IPv4: $bridge4_cidr"
 
-  echo "🔧 正在为 $macvlan_name 配置独立的 macvlan bridge"
+    # === IPv6 部分：类似处理，IPRange 优先，没有则用 Subnet ===
+    subnet6_cidr=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet // empty' | head -n1)
+    bridge6_cidr=""
+    if [ -n "$subnet6_cidr" ] && [ "$subnet6_cidr" != "null" ]; then
+        echo "🌐 IPv6 子网(Subnet): $subnet6_cidr"
 
-  # 每个 macvlan 网络有自己独立的 bridge / 脚本 / service
-  # 1) 生成安全的名字（把非字母数字变成下划线）
-  safe_name=$(echo "$macvlan_name" | sed 's/[^0-9A-Za-z]/_/g')
+        iprange6_cidr=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .IPRange // empty' | head -n1)
+        if [ -n "$iprange6_cidr" ] && [ "$iprange6_cidr" != "null" ]; then
+            echo "🌐 IPv6 IPRange: $iprange6_cidr"
+            base6="${iprange6_cidr%/*}"    # 比如 fd10:86:20:: 或 fd10:86:20::100
+        else
+            base6="${subnet6_cidr%/*}"     # 比如 fd10:86:20::
+        fi
 
-  # 2) bridge 接口名（注意 Linux 接口名 <=15 字符，这里简单截断一下）
-  bridge_if_raw="mvbr_${safe_name}"
-  bridge_if=${bridge_if_raw:0:15}
+        prefix6="${subnet6_cidr#*/}"
 
-  # 3) 脚本和 service 名称
-  setup_script="/usr/local/bin/macvlan-${safe_name}.sh"
-  service_name="macvlan-${safe_name}.service"
+        # 简单做法：直接在前缀后拼 254
+        # 如果 base6 = fd10:86:20:: 则 -> fd10:86:20::254
+        # 如果 base6 = fd10:86:20::100 仍然直接拼 254，这种情况一般不会被用来做前缀
+        bridge6="${base6}254"
+        bridge6_cidr="${bridge6}/${prefix6}"
+        echo "  计划 bridge IPv6: $bridge6_cidr"
+    fi
 
-  echo " Bridge 接口 : $bridge_if"
-  echo " Setup 脚本  : $setup_script"
-  echo " Systemd 服务: $service_name"
+    # 3. 生成接口名 / 脚本名 / service 名（跟你现在的命名规则一致）
+    if [[ "$macvlan_name" =~ ^macvlan_([0-9]+)$ || "$macvlan_name" =~ ^macvlan-([0-9]+)$ ]]; then
+        vlan_id="${BASH_REMATCH[1]}"
+        safe_suffix="-$vlan_id"
+    else
+        vlan_id=""
+        safe_suffix=""
+    fi
 
-  # 计算 bridge IPv4 / IPv6 地址
-  bridge="${iprangev4%.*}.254"
-  ipv4_fourth=$(echo "$bridge" | cut -d'.' -f4)
-  bridge6="${iprangev6_prefix}${ipv4_fourth}"
-  bridge_mac=$(ip_to_mac "$bridge")
+    safe_name="macvlan${safe_suffix}"              # macvlan / macvlan-8
+    bridge_if_raw="mvbr${safe_suffix}"             # mvbr / mvbr-8
+    bridge_if=${bridge_if_raw:0:15}
+    setup_script="/usr/local/bin/${safe_name}.sh"  # /usr/local/bin/macvlan.sh / macvlan-8.sh
+    service_name="${safe_name}.service"            # macvlan.service / macvlan-8.service
 
-  echo " Bridge IPv4 : $bridge/$subnet4"
-  echo " Bridge IPv6 : $bridge6/$subnet6"
+    echo "🧩 bridge 接口: $bridge_if"
+    echo "🧩 配置脚本: $setup_script"
+    echo "🧩 systemd 服务: $service_name"
 
-  # 生成针对当前 macvlan 网络的专属 setup 脚本
-  cat <<EOF | sudo tee "$setup_script"
+    read -p "确认创建/更新以上 bridge？(y/n): " yn
+    if [[ ! "$yn" =~ ^[Yy]$ ]]; then
+        echo "⚠️ 已取消。"
+        return 0
+    fi
+
+    # 4. 写入桥接脚本
+    sudo mkdir -p /usr/local/bin
+
+    cat <<EOF | sudo tee "$setup_script" >/dev/null
 #!/bin/bash
-ip link del $bridge_if 2>/dev/null
-ip link add $bridge_if link $networkcard type macvlan mode bridge
-ip addr add $bridge/$subnet4 dev $bridge_if
-ip -6 addr add $bridge6/$subnet6 dev $bridge_if
-ip link set $bridge_if up
-ip link set $bridge_if promisc on
-ip route replace $iprange dev $bridge_if
-ip -6 route replace $iprange6 dev $bridge_if
-ip route add 198.18.0.0/15 via $mihomo dev $bridge_if
+set -e
+
+# 删除旧的 bridge 接口（如果存在）
+ip link del "$bridge_if" 2>/dev/null || true
+
+# 创建 macvlan bridge 接口
+ip link add "$bridge_if" link "$parent_if" type macvlan mode bridge
+
+# 配置 IPv4 地址
+ip addr add "$bridge4_cidr" dev "$bridge_if"
 EOF
 
-  sudo chmod +x "$setup_script"
+    # 配置 IPv6（如果有）
+    if [ -n "$bridge6_cidr" ]; then
+        cat <<EOF | sudo tee -a "$setup_script" >/dev/null
+# 配置 IPv6 地址
+ip -6 addr add "$bridge6_cidr" dev "$bridge_if"
+EOF
+    fi
 
-  # 为当前 macvlan 网络生成独立的 systemd 服务
-  cat <<EOF | sudo tee "/etc/systemd/system/${service_name}"
+    cat <<EOF | sudo tee -a "$setup_script" >/dev/null
+
+# 启动接口并开启混杂模式
+ip link set "$bridge_if" up
+ip link set "$bridge_if" promisc on
+
+# 路由到 macvlan 网络（路由仍然用 Subnet）
+ip route replace "$subnet4_cidr" dev "$bridge_if"
+EOF
+
+    if [ -n "$subnet6_cidr" ] && [ "$subnet6_cidr" != "null" ]; then
+        cat <<EOF | sudo tee -a "$setup_script" >/dev/null
+ip -6 route replace "$subnet6_cidr" dev "$bridge_if"
+EOF
+    fi
+
+    # 如果存在 mihomo 变量，就为 198.18.0.0/15 添加路由
+    if [ -n "$mihomo" ]; then
+        cat <<EOF | sudo tee -a "$setup_script" >/dev/null
+
+# mihomo 专用路由（如未定义 mihomo，请忽略）
+ip route add 198.18.0.0/15 via "$mihomo" dev "$bridge_if" 2>/dev/null || true
+EOF
+    fi
+
+    sudo chmod +x "$setup_script"
+
+    # 5. 写入 systemd 服务
+    sudo bash -c "cat > /etc/systemd/system/$service_name" <<EOF
 [Unit]
-Description=Setup macvlan bridge for ${macvlan_name}
-After=network.target
+Description=macvlan bridge for $macvlan_name ($bridge_if)
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=${setup_script}
+ExecStart=$setup_script
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-  sudo systemctl daemon-reload
-  sudo systemctl enable "${service_name}"
-  sudo systemctl start "${service_name}"
+    # 6. 启用并立即执行
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now "$service_name"
 
-  echo "✅ 已为 $macvlan_name 创建/启动独立的 bridge：$bridge_if"
-  echo "   - 脚本 : $setup_script"
-  echo "   - 服务 : $service_name"
-  echo "   - IPv4 : $bridge/$subnet4"
-  echo "   - IPv6 : $bridge6/$subnet6"
+    echo "✅ 已为 macvlan 网络 $macvlan_name 创建/更新 bridge 接口: $bridge_if"
+    echo "   IPv4: $bridge4_cidr"
+    if [ -n "$bridge6_cidr" ]; then
+        echo "   IPv6: $bridge6_cidr"
+    fi
 }
 
 install_mihomo() {
@@ -920,51 +978,188 @@ function calculate_ip_mac() {
 
 
 # ========== 删除 docker macvlan 网络 ==========
-function clean_macvlan_network() {
-  echo "🧹 正在删除 docker macvlan 网络配置..."
+clean_macvlan_network() {
+    echo "🧹 清理 Docker macvlan 网络"
 
-  # 删除 docker macvlan 网络
-  docker network rm macvlan 2>/dev/null
+    # 找出所有以 macvlan 开头的 Docker 网络
+    mapfile -t macvlan_networks < <(docker network ls --format '{{.Name}}' | grep '^macvlan' || true)
 
-  # 删除 docker daemon ipv6 配置（如存在）
-  if [ -f /etc/docker/daemon.json ]; then
-    sudo rm /etc/docker/daemon.json
-    sudo systemctl restart docker
-    echo "✅ 已删除 /etc/docker/daemon.json 并重启 docker"
-  fi
+    if [ ${#macvlan_networks[@]} -eq 0 ]; then
+        echo "ℹ️ 当前没有任何以 macvlan 开头的 Docker 网络。"
+        return 0
+    fi
 
-  # 清理 IPv6 路由中 fd10 / fd17 / fd19 前缀
-  for prefix in fd10 fd17 fd19; do
-    ip -6 route | grep "^$prefix" | awk '{print $1}' | while read route; do
-      sudo ip -6 route del $route
-      echo "🗑️ 已删除 IPv6 路由: $route"
+    echo "检测到以下 macvlan 网络："
+    for i in "${!macvlan_networks[@]}"; do
+        net="${macvlan_networks[$i]}"
+        # 检查是否有容器在使用该网络
+        containers=$(docker network inspect -f '{{range $id,$c := .Containers}}{{printf "%s " $c.Name}}{{end}}' "$net" 2>/dev/null)
+        if [ -n "$containers" ]; then
+            echo "  $i) $net    (使用中的容器: $containers)"
+        else
+            echo "  $i) $net"
+        fi
     done
-  done
 
-  echo "✅ docker macvlan 网络清理完成"
+    echo
+    echo "请输入要删除的网络序号，或输入 a 表示删除全部，直接回车取消。"
+    read -p "你的选择: " choice
+
+    if [ -z "$choice" ]; then
+        echo "⚠️ 已取消删除 macvlan 网络。"
+        return 0
+    fi
+
+    local to_delete=()
+
+    if [[ "$choice" =~ ^[0-9]+$ ]]; then
+        if [ "$choice" -lt 0 ] || [ "$choice" -ge "${#macvlan_networks[@]}" ]; then
+            echo "❌ 无效的序号。"
+            return 1
+        fi
+        to_delete=("${macvlan_networks[$choice]}")
+    elif [[ "$choice" =~ ^[Aa]$ ]]; then
+        to_delete=("${macvlan_networks[@]}")
+    else
+        echo "❌ 无效输入。"
+        return 1
+    fi
+
+    for net in "${to_delete[@]}"; do
+        echo
+        echo "🧻 准备删除 macvlan 网络: $net"
+
+        # 检查是否有容器在用
+        containers=$(docker network inspect -f '{{range $id,$c := .Containers}}{{printf "%s " $c.Name}}{{end}}' "$net" 2>/dev/null)
+
+        if [ -n "$containers" ]; then
+            echo "⚠️ 该网络仍有容器在使用：$containers"
+            read -p "是否强制删除该网络？相关容器将失去该网络连接。(y/N): " yn
+            if [[ ! "$yn" =~ ^[Yy]$ ]]; then
+                echo "⏭ 已跳过 $net"
+                continue
+            fi
+        fi
+
+        if docker network rm "$net"; then
+            echo "✅ 已删除 macvlan 网络: $net"
+        else
+            echo "❌ 删除 macvlan 网络失败: $net"
+        fi
+    done
 }
 
 # ========== 删除 macvlan bridge 配置 ==========
-function clean_macvlan_bridge() {
-  echo "🧹 正在删除 macvlan bridge 配置..."
+clean_macvlan_bridge() {
+    echo "🧹 清理 macvlan bridge（支持多 macvlan 网络）"
 
-  # 删除 macvlan bridge 网络接口
-  sudo ip link del macvlan-bridge 2>/dev/null
+    # 找出所有以 macvlan 开头的 systemd service
+    local svc_files=()
+    if compgen -G "/etc/systemd/system/macvlan*.service" > /dev/null; then
+        for f in /etc/systemd/system/macvlan*.service; do
+            [ -e "$f" ] || continue
+            svc_files+=("$f")
+        done
+    fi
 
-  # 停止并禁用 systemd 服务
-  sudo systemctl stop macvlan.service
-  sudo systemctl disable macvlan.service
+    if [ ${#svc_files[@]} -eq 0 ]; then
+        echo "ℹ️ 未发现任何 macvlan bridge 的 systemd 服务（/etc/systemd/system/macvlan*.service）。"
+        return 0
+    fi
 
-  # 删除 systemd 服务文件
-  sudo rm /etc/systemd/system/macvlan.service
+    echo "检测到以下 macvlan bridge 服务："
+    local i
+    for i in "${!svc_files[@]}"; do
+        local svc_path="${svc_files[$i]}"
+        local svc_name
+        svc_name=$(basename "$svc_path")     # 比如：macvlan.service / macvlan-8.service
+        local safe_name="${svc_name%.service}"
 
-  # 删除 macvlan-setup.sh 脚本
-  sudo rm /usr/local/bin/macvlan-setup.sh
+        # 根据 service 名推导 suffix（与 create_macvlan_bridge 保持一致）
+        local safe_suffix=""
+        if [[ "$safe_name" =~ ^macvlan-([0-9]+)$ ]]; then
+            safe_suffix="-${BASH_REMATCH[1]}"
+        else
+            safe_suffix=""
+        fi
 
-  # 重载 systemd
-  sudo systemctl daemon-reload
+        # 接口名：mvbr / mvbr-8
+        local bridge_if_raw="mvbr${safe_suffix}"
+        local bridge_if="${bridge_if_raw:0:15}"
 
-  echo "✅ macvlan bridge 配置已删除"
+        # 脚本名：/usr/local/bin/macvlan.sh / /usr/local/bin/macvlan-8.sh
+        local setup_script="/usr/local/bin/${safe_name}.sh"
+
+        echo "  $i) 服务: $svc_name    接口: $bridge_if    脚本: $setup_script"
+    done
+
+    echo
+    echo "请输入要清理的序号，或输入 a 表示清理全部，直接回车取消。"
+    read -p "你的选择: " choice
+
+    if [ -z "$choice" ]; then
+        echo "⚠️ 已取消清理。"
+        return 0
+    fi
+
+    local to_clean=()
+
+    if [[ "$choice" =~ ^[0-9]+$ ]]; then
+        if [ "$choice" -lt 0 ] || [ "$choice" -ge "${#svc_files[@]}" ]; then
+            echo "❌ 无效的序号。"
+            return 1
+        fi
+        to_clean=("${svc_files[$choice]}")
+    elif [[ "$choice" =~ ^[Aa]$ ]]; then
+        to_clean=("${svc_files[@]}")
+    else
+        echo "❌ 无效输入。"
+        return 1
+    fi
+
+    for svc_path in "${to_clean[@]}"; do
+        local svc_name
+        svc_name=$(basename "$svc_path")   # macvlan.service / macvlan-8.service
+        local safe_name="${svc_name%.service}"
+
+        # 与 create_macvlan_bridge 同样的 suffix 规则
+        local safe_suffix=""
+        if [[ "$safe_name" =~ ^macvlan-([0-9]+)$ ]]; then
+            safe_suffix="-${BASH_REMATCH[1]}"
+        else
+            safe_suffix=""
+        fi
+
+        local bridge_if_raw="mvbr${safe_suffix}"
+        local bridge_if="${bridge_if_raw:0:15}"
+        local setup_script="/usr/local/bin/${safe_name}.sh"
+
+        echo "🧻 正在清理 macvlan bridge:"
+        echo "   服务: $svc_name"
+        echo "   接口: $bridge_if"
+        echo "   脚本: $setup_script"
+
+        # 停止并禁用 systemd 服务
+        if systemctl list-unit-files | grep -q "^${svc_name}"; then
+            sudo systemctl disable --now "$svc_name" 2>/dev/null || true
+        fi
+
+        # 删除网卡
+        sudo ip link del "$bridge_if" 2>/dev/null || true
+
+        # 删除脚本
+        if [ -f "$setup_script" ]; then
+            sudo rm -f "$setup_script"
+        fi
+
+        # 删除 service 文件
+        if [ -f "$svc_path" ]; then
+            sudo rm -f "$svc_path"
+        fi
+    done
+
+    sudo systemctl daemon-reload
+    echo "✅ 选中的 macvlan bridge 已清理完成。"
 }
 
 function run_watchtower_once() {
