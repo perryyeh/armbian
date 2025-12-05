@@ -482,7 +482,6 @@ create_macvlan_bridge() {
     echo "🔗 发现 parent 接口: $parent_if"
 
     # === IPv4 部分：Subnet + IPRange 组合使用 ===
-    # Subnet 用于路由，IPRange（如果有）用于决定 bridge IP 前缀
     subnet4_cidr=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Subnet // empty' | head -n1)
     if [ -z "$subnet4_cidr" ] || [ "$subnet4_cidr" = "null" ]; then
         echo "❌ 无法从 $macvlan_name 中解析 IPv4 Subnet，请确认该网络配置了 IPv4。"
@@ -495,18 +494,22 @@ create_macvlan_bridge() {
         echo "🌐 IPv4 IPRange: $iprange4_cidr"
         base4="${iprange4_cidr%/*}"   # 例如 10.86.21.0
     else
-        base4="${subnet4_cidr%/*}"    # 例如 10.86.21.0
+        base4="${subnet4_cidr%/*}"    # 例如 10.86.20.0
     fi
+    # ⭐ 路由/掩码：优先 IPRange，缺省退回 Subnet
+    route4_cidr="${iprange4_cidr:-$subnet4_cidr}"
+    prefix4="${route4_cidr#*/}"
 
-    prefix4="${subnet4_cidr#*/}"      # 路由用 Subnet 掩码，例如 24
     # 用 base 前 3 段 + .254 作为 bridge IP
     bridge4="${base4%.*}.254"
     bridge4_cidr="${bridge4}/${prefix4}"
     echo "📍 计划 bridge IPv4: $bridge4_cidr"
 
-    # === IPv6 部分：类似处理，IPRange 优先，没有则用 Subnet ===
+    # === IPv6 部分：IPRange 优先，没有则用 Subnet；统一收敛到 /64，bridge 用 ::eeee ===
     subnet6_cidr=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet // empty' | head -n1)
     bridge6_cidr=""
+    route6_pref=""
+
     if [ -n "$subnet6_cidr" ] && [ "$subnet6_cidr" != "null" ]; then
         echo "🌐 IPv6 子网(Subnet): $subnet6_cidr"
 
@@ -518,13 +521,10 @@ create_macvlan_bridge() {
             base6="${subnet6_cidr%/*}"     # 比如 fd10:86:20::
         fi
 
-        prefix6="${subnet6_cidr#*/}"
-
-        # 简单做法：直接在前缀后拼 254
-        # 如果 base6 = fd10:86:20:: 则 -> fd10:86:20::254
-        # 如果 base6 = fd10:86:20::100 仍然直接拼 254，这种情况一般不会被用来做前缀
-        bridge6="${base6}254"
-        bridge6_cidr="${bridge6}/${prefix6}"
+        # 归一：提纯前缀主体，统一 /64，bridge 固定 ::eeee
+        base6_prefix="${base6%%::*}"       # 例如 fd10:86:20
+        bridge6_cidr="${base6_prefix}::eeee/64"
+        route6_pref="${base6_prefix}::/64"
         echo "  计划 bridge IPv6: $bridge6_cidr"
     fi
 
@@ -566,14 +566,14 @@ ip link del "$bridge_if" 2>/dev/null || true
 # 创建 macvlan bridge 接口
 ip link add "$bridge_if" link "$parent_if" type macvlan mode bridge
 
-# 配置 IPv4 地址
+# 配置 IPv4 地址（掩码跟随 IPRange/退回 Subnet）
 ip addr add "$bridge4_cidr" dev "$bridge_if"
 EOF
 
     # 配置 IPv6（如果有）
     if [ -n "$bridge6_cidr" ]; then
         cat <<EOF | sudo tee -a "$setup_script" >/dev/null
-# 配置 IPv6 地址
+# 配置 IPv6 地址（统一 /64，固定 ::eeee）
 ip -6 addr add "$bridge6_cidr" dev "$bridge_if"
 EOF
     fi
@@ -583,14 +583,19 @@ EOF
 # 启动接口并开启混杂模式
 ip link set "$bridge_if" up
 ip link set "$bridge_if" promisc on
+ip link set "$parent_if" promisc on
 
-# 路由到 macvlan 网络（路由仍然用 Subnet）
-ip route replace "$subnet4_cidr" dev "$bridge_if"
+# 放宽 rp_filter，避免 macvlan 回程包被丢
+sysctl -w "net.ipv4.conf.${bridge_if}.rp_filter=0" >/dev/null || true
+sysctl -w "net.ipv4.conf.${parent_if}.rp_filter=0" >/dev/null || true
+
+# 路由到 macvlan 网络（优先 IPRange，缺省 Subnet）
+ip route replace "$route4_cidr" dev "$bridge_if"
 EOF
 
-    if [ -n "$subnet6_cidr" ] && [ "$subnet6_cidr" != "null" ]; then
+    if [ -n "$route6_pref" ]; then
         cat <<EOF | sudo tee -a "$setup_script" >/dev/null
-ip -6 route replace "$subnet6_cidr" dev "$bridge_if"
+ip -6 route replace "$route6_pref" dev "$bridge_if"
 EOF
     fi
 
