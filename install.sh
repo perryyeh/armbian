@@ -192,6 +192,57 @@ get_subnet_v4() {
   echo $cidr
 }
 
+# ---- IPv4 计算工具 ----
+ipv4_to_int() { local IFS=.; read -r a b c d <<<"$1"; echo $(( (a<<24)+(b<<16)+(c<<8)+d )); }
+
+mask_from_len() { local l="$1"; echo $(( (0xFFFFFFFF << (32-l)) & 0xFFFFFFFF )); }
+
+cidr_contains_ip() {
+  local ip="$1" cidr="$2" net="${cidr%/*}" len="${cidr#*/}"
+  local ipi neti mask; ipi=$(ipv4_to_int "$ip"); neti=$(ipv4_to_int "$net"); mask=$(mask_from_len "$len")
+  (( (ipi & mask) == (neti & mask) ))
+}
+
+# ---- 自动探测 mihomo 下一跳 IP（返回一个 IPv4 或空串）----
+# 参数1: route4_cidr（如 10.86.21.0/24 或 /23）
+# 参数2: network_info（docker network inspect 的 JSON 字符串）
+detect_mihomo_ip() {
+  local _route4="$1" _netinfo="$2"
+
+  # 1) 环境变量优先（大写/小写都支持）
+  if [ -n "$MIHOMO" ]; then echo "$MIHOMO"; return; fi
+  if [ -n "$mihomo" ]; then echo "$mihomo"; return; fi
+
+  # 2) systemd 环境文件（可选）
+  if [ -f /etc/default/macvlan_env ]; then
+    # shellcheck source=/dev/null
+    . /etc/default/macvlan_env
+    if [ -n "$MIHOMO" ]; then echo "$MIHOMO"; return; fi
+    if [ -n "$mihomo" ]; then echo "$mihomo"; return; fi
+  fi
+
+  # 3) Docker 容器：名称含 mihomo/clash/clash-meta 的容器；优先选与 _route4 同网段的 IP
+  local ids iplist ip best=""
+  ids=$(docker ps --format '{{.ID}} {{.Names}}' | grep -Ei '(^|[ _-])(mihomo|clash-meta|clash)($|[ _-])' | awk '{print $1}')
+  for id in $ids; do
+    iplist=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$id")
+    for ip in $iplist; do
+      if [ -n "$ip" ] && [ -n "$_route4" ] && cidr_contains_ip "$ip" "$_route4"; then
+        echo "$ip"; return
+      fi
+      [ -z "$best" ] && best="$ip"
+    done
+  done
+  [ -n "$best" ] && { echo "$best"; return; }
+
+  # 4) 回退到 macvlan 的 IPv4 网关
+  local gw4
+  gw4=$(echo "$_netinfo" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Gateway // empty' | head -n1)
+  [ -n "$gw4" ] && { echo "$gw4"; return; }
+
+  # 5) 无可用
+  echo ""
+}
 
 # ========== 1. 创建 macvlan 网络 ==========
 function create_macvlan_network() {
@@ -628,6 +679,14 @@ create_macvlan_bridge() {
     echo "🧩 配置脚本: $setup_script"
     echo "🧩 systemd 服务: $service_name"
 
+    # —— 在写脚本之前：自动探测 mihomo 下一跳 —— 
+    mihomo_ip="$(detect_mihomo_ip "$route4_cidr" "$network_info")"
+    if [ -n "$mihomo_ip" ]; then
+        echo "🔎 自动探测到 mihomo IP: $mihomo_ip"
+    else
+        echo "ℹ️ 未探测到 mihomo IP，将跳过创建时的 198.18.0.0/15 路由写入（运行时仍可用 MIHOMO 覆盖）"
+    fi
+
     read -p "确认创建/更新以上 bridge？(y/n): " yn
     if [[ ! "$yn" =~ ^[Yy]$ ]]; then
         echo "⚠️ 已取消。"
@@ -680,14 +739,23 @@ ip -6 route replace "$route6_pref" dev "$bridge_if"
 EOF
     fi
 
-    # 如果存在 mihomo 变量，就为 198.18.0.0/15 添加路由
-    if [ -n "$mihomo" ]; then
+    # --- 追加 mihomo 路由：创建时写死（若探测到了） ---
+    if [ -n "$mihomo_ip" ]; then
         cat <<EOF | sudo tee -a "$setup_script" >/dev/null
 
-# mihomo 专用路由（如未定义 mihomo，请忽略）
-ip route add 198.18.0.0/15 via "$mihomo" dev "$bridge_if" 2>/dev/null || true
+# mihomo 专用路由（198.18.0.0/15）——创建时写入
+ip route replace 198.18.0.0/15 via "$mihomo_ip" dev "$bridge_if" 2>/dev/null || true
 EOF
     fi
+
+# --- 运行时可覆盖（支持 MIHOMO/mihomo 环境变量） ---
+    cat <<'EOF' | sudo tee -a "$setup_script" >/dev/null
+# 运行时覆盖：若设置了 MIHOMO/mihomo，则替换 198.18/15 的下一跳
+MIHOMO_EFFECTIVE="${MIHOMO:-${mihomo:-}}"
+if [ -n "$MIHOMO_EFFECTIVE" ]; then
+  ip route replace 198.18.0.0/15 via "$MIHOMO_EFFECTIVE" dev "$bridge_if" 2>/dev/null || true
+fi
+EOF
 
     sudo chmod +x "$setup_script"
 
