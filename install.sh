@@ -1463,38 +1463,31 @@ EOF
 # =====================
 #  功能 71：优化 Docker 日志（设置轮转）
 # =====================
-function optimize_docker_logs() {
-    if [ -z "$BASH_VERSION" ]; then exec /usr/bin/env bash "$0" "$@"; fi
-    if [ "$EUID" -ne 0 ]; then echo "请以 root 权限运行（sudo bash $0）"; return 1; fi
-
+optimize_docker_logs() {
+    if [ "$EUID" -ne 0 ]; then echo "请以 root 权限运行"; return 1; fi
     if ! command -v docker >/dev/null 2>&1; then
-        echo "未检测到 Docker，请先安装 Docker。"; return 1
+        echo "未检测到 Docker"; return 1
     fi
 
     local DAEMON_JSON="/etc/docker/daemon.json"
-    local BACKUP_SUFFIX; BACKUP_SUFFIX="$(date +%Y%m%d-%H%M%S)"
-    local CURRENT_ROOT
-
-    # 优先从 docker info 获取当前 data-root，保证不改变现有数据目录
-    CURRENT_ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
-    if [[ -z "$CURRENT_ROOT" ]]; then
-        # 再尝试从 daemon.json 里提取（如果存在）
-        if [[ -f "$DAEMON_JSON" ]]; then
-            CURRENT_ROOT="$(sed -n 's/.*\"data-root\" *: *\"\\(.*\\)\".*/\\1/p' "$DAEMON_JSON" | head -n1)"
-        fi
-    fi
-    # 兜底到默认
-    if [[ -z "$CURRENT_ROOT" ]]; then CURRENT_ROOT="/var/lib/docker"; fi
+    local BAK="${DAEMON_JSON}.bak-$(date +%Y%m%d-%H%M%S)"
 
     mkdir -p "$(dirname "$DAEMON_JSON")"
+
+    # 备份旧文件
     if [[ -f "$DAEMON_JSON" ]]; then
-        cp -a "$DAEMON_JSON" "${DAEMON_JSON}.bak-${BACKUP_SUFFIX}"
-        echo "🧩 已备份 $DAEMON_JSON 为 ${DAEMON_JSON}.bak-${BACKUP_SUFFIX}"
+        cp -a "$DAEMON_JSON" "$BAK"
+        echo "已备份为 $BAK"
     fi
 
+    # 读取原有 data-root，不动迁移后的配置
+    local CURRENT_ROOT
+    CURRENT_ROOT="$(sed -n 's/.*\"data-root\" *: *\"\\(.*\\)\".*/\\1/p' "$DAEMON_JSON")"
+
+    # 生成新的 daemon.json
     tee "$DAEMON_JSON" >/dev/null <<EOF
 {
-  "data-root": "$CURRENT_ROOT",
+  $( [[ -n "$CURRENT_ROOT" ]] && echo "\"data-root\": \"$CURRENT_ROOT\"," )
   "log-driver": "json-file",
   "log-opts": {
     "max-size": "20m",
@@ -1505,7 +1498,7 @@ EOF
 
     systemctl daemon-reload
     systemctl restart docker
-    echo "✅ 已设置 Docker 日志轮转（20m x 3），并保留 data-root=$CURRENT_ROOT"
+    echo "✅ Docker 日志轮转已启用（未修改 data-root，兼容迁移目录）"
 }
 
 # ========== 主循环 ==========
