@@ -38,7 +38,7 @@ function show_menu() {
     echo "7）安装docker"
     echo "8）创建macvlan（包括ipv4+ipv6）"
     echo "9）清理macvlan"
-    echo "10）安装portainer面板和watchtower自动更新"
+    echo "10）安装portainer面板"
     echo "11）安装librespeed测速"
     echo "14）安装adguardhome"
     echo "19）安装mosdns"
@@ -48,6 +48,7 @@ function show_menu() {
     echo "71) 优化docker日志"
     echo "90）创建macvlan bridge"
     echo "91）清理macvlan bridge"
+    echo "97）安装watchtower自动更新"
     echo "98）强制使用watchtower更新一次镜像"
     echo "99）退出"
     echo "============================"
@@ -1348,12 +1349,14 @@ clean_macvlan_bridge() {
     echo "✅ 清理完成。"
 }
 
+function install_portainer() {
+    docker run -d --name=watchtower --restart=always -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup
+}
+
 function install_portainer_watchtower() {
     read -p "即将安装watchtower，请输入存储目录(例如 /data/dockerapps): " dockerapps
     docker run -d -p 8000:8000 -p 9443:9443 --network=host --name=portainer --restart=always \
     -v /var/run/docker.sock:/var/run/docker.sock -v ${dockerapps}/portainer:/data portainer/portainer-ce:lts
-
-    docker run -d --name=watchtower --restart=always -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup
 }
 
 function run_watchtower_once() {
@@ -1607,7 +1610,7 @@ while true; do
         7) install_docker ;;
         8) create_macvlan_network ;;
         9) clean_macvlan_network ;;
-        10) install_portainer_watchtower ;;
+        10) install_portainer ;;
         11) install_librespeed ;;
         14) install_adguardhome ;;
         19) install_mosdns ;;
@@ -1617,6 +1620,7 @@ while true; do
         71) optimize_docker_logs ;;
         90) create_macvlan_bridge ;;
         91) clean_macvlan_bridge ;;
+        95) install_watchtower ;;
         98) run_watchtower_once ;;
         99) echo "退出脚本。"; exit 0 ;;
         *) echo "无效选项，请重新输入。" ;;
