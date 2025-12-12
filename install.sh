@@ -1350,7 +1350,12 @@ clean_macvlan_bridge() {
 }
 
 function install_watchtower() {
-    docker run -d --name=watchtower --restart=always -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup
+    API=$(docker version --format '{{.Server.APIVersion}}')   # 预期=1.52
+    docker run --rm \
+      -e DOCKER_API_VERSION="$API" \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      containrrr/watchtower:latest \
+      --cleanup --include-restarting --revive-stopped
 }
 
 function install_portainer() {
