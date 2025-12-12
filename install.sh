@@ -1385,6 +1385,8 @@ while true; do
         19) install_mosdns ;;
         20) install_mihomo ;;
         45) install_samba ;;
+        70) migrate_docker_datadir ;;
+        71) optimize_docker_logs ;;
         90) create_macvlan_bridge ;;
         91) clean_macvlan_bridge ;;
         98) run_watchtower_once ;;
