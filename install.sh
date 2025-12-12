@@ -1353,7 +1353,7 @@ function install_portainer() {
     docker run -d --name=watchtower --restart=always -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --cleanup
 }
 
-function install_portainer_watchtower() {
+function install_watchtower() {
     read -p "即将安装watchtower，请输入存储目录(例如 /data/dockerapps): " dockerapps
     docker run -d -p 8000:8000 -p 9443:9443 --network=host --name=portainer --restart=always \
     -v /var/run/docker.sock:/var/run/docker.sock -v ${dockerapps}/portainer:/data portainer/portainer-ce:lts
@@ -1620,7 +1620,7 @@ while true; do
         71) optimize_docker_logs ;;
         90) create_macvlan_bridge ;;
         91) clean_macvlan_bridge ;;
-        95) install_watchtower ;;
+        97) install_watchtower ;;
         98) run_watchtower_once ;;
         99) echo "退出脚本。"; exit 0 ;;
         *) echo "无效选项，请重新输入。" ;;
