@@ -33,6 +33,8 @@
 | 19 | 安装 mosdns                     |
 | 20 | 安装 mihomo                     |
 | 45 | 安装 samba                      |
+| 70 | 迁移docker目录 |
+| 71 | 优化docker日志 |
 | 80 | 创建macvlan bridge              |
 | 90 | 清理macvlan bridge              |
 | 91 | 清理macvlan                     |
