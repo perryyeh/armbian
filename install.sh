@@ -1349,6 +1349,12 @@ clean_macvlan_bridge() {
     echo "✅ 清理完成。"
 }
 
+function install_portainer() {
+    read -p "即将安装watchtower，请输入存储目录(例如 /data/dockerapps): " dockerapps
+    docker run -d -p 8000:8000 -p 9443:9443 --network=host --name=portainer --restart=always \
+    -v /var/run/docker.sock:/var/run/docker.sock -v ${dockerapps}/portainer:/data portainer/portainer-ce:lts
+}
+
 function install_watchtower() {
     API=$(docker version --format '{{.Server.APIVersion}}')   # 预期=1.52
     docker run --rm \
@@ -1358,15 +1364,14 @@ function install_watchtower() {
       --name=watchtower --cleanup --include-restarting --revive-stopped
 }
 
-function install_portainer() {
-    read -p "即将安装watchtower，请输入存储目录(例如 /data/dockerapps): " dockerapps
-    docker run -d -p 8000:8000 -p 9443:9443 --network=host --name=portainer --restart=always \
-    -v /var/run/docker.sock:/var/run/docker.sock -v ${dockerapps}/portainer:/data portainer/portainer-ce:lts
-}
-
 function run_watchtower_once() {
     echo "🔧 正在执行 watchtower --run-once 更新所有容器..."
-    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtower --run-once
+    API=$(docker version --format '{{.Server.APIVersion}}')   # 预期=1.52
+    docker run --rm \
+        -e DOCKER_API_VERSION="$API" \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        containrrr/watchtower:latest \
+        --run-once
     echo "✅ watchtower 更新完成"
 }
 
