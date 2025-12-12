@@ -1355,7 +1355,7 @@ function install_watchtower() {
       -e DOCKER_API_VERSION="$API" \
       -v /var/run/docker.sock:/var/run/docker.sock \
       containrrr/watchtower:latest \
-      --cleanup --include-restarting --revive-stopped
+      --name=watchtower --cleanup --include-restarting --revive-stopped
 }
 
 function install_portainer() {
