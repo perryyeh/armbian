@@ -35,7 +35,7 @@ function show_menu() {
     echo "3）显示磁盘信息"
     echo "4）显示docker信息"
     echo "5）格式化磁盘并挂载"
-    echo "7）安装docker"
+    echo "7）安装docker/迁移docker目录"
     echo "8）创建macvlan（包括ipv4+ipv6）"
     echo "9）清理macvlan"
     echo "10）安装portainer面板和watchtower自动更新"
@@ -61,7 +61,15 @@ function disk_info() { lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINT; }
 
 function docker_info() { docker info; }
 
-function install_docker() {
+# ===== Docker 安装 / 迁移目录 一体化逻辑 =====
+
+# 检查 Docker 是否已安装
+function _docker_installed() {
+    command -v docker >/dev/null 2>&1
+}
+
+# 仅安装 Docker（官方仓库），不做迁移
+function _install_docker_packages() {
     . /etc/os-release
 
     sudo apt-get update
@@ -72,15 +80,13 @@ function install_docker() {
     if [[ "$ID" == "debian" ]]; then
         sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
         sudo chmod a+r /etc/apt/keyrings/docker.asc
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
     elif [[ "$ID" == "ubuntu" ]]; then
         sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
         sudo chmod a+r /etc/apt/keyrings/docker.asc
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
     else
-        echo "当前系统 $ID 不在支持范围内，请手动安装 Docker。"
+        echo "当前系统 $ID 暂不在脚本支持范围，请手动安装 Docker。"
         return 1
     fi
 
@@ -90,8 +96,182 @@ function install_docker() {
     sudo systemctl enable docker
     sudo systemctl start docker
 
-    echo "✅ Docker 安装完成，版本信息："
-    docker --version
+    echo "✅ Docker 安装完成：$(docker --version)"
+}
+
+# 迁移 /var/lib/docker -> /data/docker，并设置日志轮转
+function _migrate_docker_data_root() {
+    local OLD_ROOT="/var/lib/docker"
+    local NEW_ROOT
+    local DAEMON_JSON="/etc/docker/daemon.json"
+    local BACKUP_SUFFIX
+    BACKUP_SUFFIX="$(date +%Y%m%d-%H%M%S)"
+
+    # 询问迁移目标目录
+    read -rp "请输入迁移目标目录（例如 /data/docker）： " NEW_ROOT
+    if [[ -z "$NEW_ROOT" ]]; then
+        echo "未输入路径，已取消迁移。"
+        return 1
+    fi
+    if [[ ! -d "$NEW_ROOT" ]]; then
+        echo "目录不存在：$NEW_ROOT  —— 已取消迁移。"
+        return 1
+    fi
+    if [[ "$NEW_ROOT" == "$OLD_ROOT" ]]; then
+        echo "目标目录与当前目录相同，无需迁移。"
+        return 0
+    fi
+
+    # 依赖检查
+    if ! command -v rsync >/dev/null 2>&1; then
+        echo "🔧 安装 rsync ..."
+        sudo apt-get update -y
+        sudo apt-get install -y rsync
+    fi
+
+    # 停止 Docker
+    sudo systemctl stop docker || true
+
+    # 准备目标目录（已存在则继续）
+    sudo mkdir -p "$NEW_ROOT"
+
+    # 同步数据（保留权限/硬链接/扩展属性）
+    if [[ -d "$OLD_ROOT" && -n "$(ls -A "$OLD_ROOT" 2>/dev/null || true)" ]]; then
+        sudo rsync -aHAX --delete --numeric-ids "$OLD_ROOT"/ "$NEW_ROOT"/
+        echo "✅ 数据已同步到 $NEW_ROOT"
+    else
+        echo "ℹ️ $OLD_ROOT 为空或不存在，将创建全新 Docker 根目录"
+    fi
+
+    # 备份旧目录以便回滚
+    if [[ -d "$OLD_ROOT" ]]; then
+        sudo mv "$OLD_ROOT" "${OLD_ROOT}.bak-${BACKUP_SUFFIX}"
+        echo "🧩 已备份旧目录到 ${OLD_ROOT}.bak-${BACKUP_SUFFIX}"
+    fi
+    sudo mkdir -p "$OLD_ROOT"  # 占位
+
+    # 备份并写入 daemon.json（包含 data-root 与日志轮转）
+    sudo mkdir -p "$(dirname "$DAEMON_JSON")"
+    if [[ -f "$DAEMON_JSON" ]]; then
+        sudo cp -a "$DAEMON_JSON" "${DAEMON_JSON}.bak-${BACKUP_SUFFIX}"
+        echo "🧩 已备份原有 $DAEMON_JSON 为 ${DAEMON_JSON}.bak-${BACKUP_SUFFIX}"
+    fi
+
+    sudo bash -c "cat >'$DAEMON_JSON' <<JSON
+{
+  \"data-root\": \"$NEW_ROOT\",
+  \"log-driver\": \"json-file\",
+  \"log-opts\": {
+    \"max-size\": \"20m\",
+    \"max-file\": \"3\"
+  }
+}
+JSON"
+
+    # 重载并启动 Docker
+    sudo systemctl daemon-reload
+    sudo systemctl start docker
+    sudo systemctl enable docker >/dev/null 2>&1 || true
+
+    # 校验
+    local ROOT_DIR
+    ROOT_DIR=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+    if [[ "$ROOT_DIR" == "$NEW_ROOT" ]]; then
+        echo "✅ 迁移成功：Docker Root Dir = $ROOT_DIR"
+        echo "🧹 如确认正常，可清理备份释放空间：sudo rm -rf ${OLD_ROOT}.bak-${BACKUP_SUFFIX}"
+    else
+        echo "❌ 迁移校验失败：检测到 Docker Root Dir 为 $ROOT_DIR"
+        echo "↩️ 正在尝试回滚 ..."
+        sudo systemctl stop docker || true
+        sudo rm -rf "$OLD_ROOT"
+        if [[ -d "${OLD_ROOT}.bak-${BACKUP_SUFFIX}" ]]; then
+            sudo mv "${OLD_ROOT}.bak-${BACKUP_SUFFIX}" "$OLD_ROOT"
+        fi
+        if [[ -f "${DAEMON_JSON}.bak-${BACKUP_SUFFIX}" ]]; then
+            sudo cp -a "${DAEMON_JSON}.bak-${BACKUP_SUFFIX}" "$DAEMON_JSON"
+        fi
+        sudo systemctl start docker || true
+        echo "已回滚至迁移前状态。"
+        return 1
+    fi
+}
+JSON"
+
+    # 重载并启动 Docker
+    sudo systemctl daemon-reload
+    sudo systemctl start docker
+    sudo systemctl enable docker >/dev/null 2>&1 || true
+
+    # 校验
+    local ROOT_DIR
+    ROOT_DIR=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+    if [[ \"$ROOT_DIR\" == \"$NEW_ROOT\" ]]; then
+        echo "✅ 迁移成功：Docker Root Dir = $ROOT_DIR"
+        echo "🧹 如确认正常，可清理备份释放空间：sudo rm -rf ${OLD_ROOT}.bak-${BACKUP_SUFFIX}"
+    else
+        echo "❌ 迁移校验失败：检测到 Docker Root Dir 为 $ROOT_DIR"
+        echo "↩️ 正在尝试回滚 ..."
+        sudo systemctl stop docker || true
+        sudo rm -rf \"$OLD_ROOT\"
+        if [[ -d \"${OLD_ROOT}.bak-${BACKUP_SUFFIX}\" ]]; then
+            sudo mv \"${OLD_ROOT}.bak-${BACKUP_SUFFIX}\" \"$OLD_ROOT\"
+        fi
+        if [[ -f \"${DAEMON_JSON}.bak-${BACKUP_SUFFIX}\" ]]; then
+            sudo cp -a \"${DAEMON_JSON}.bak-${BACKUP_SUFFIX}\" \"$DAEMON_JSON\"
+        fi
+        sudo systemctl start docker || true
+        echo \"已回滚至迁移前状态。\"
+        return 1
+    fi
+}
+
+# 对外入口：安装 docker / 迁移 docker 目录
+function install_or_migrate_docker() {
+    if _docker_installed; then
+        echo "检测到已安装 Docker ($(docker --version 2>/dev/null))."
+        echo "请选择操作："
+        echo "  1) 迁移 Docker 数据目录"
+        echo "  2) 清空 Docker JSON 日志"
+        echo "  q) 退出"
+        read -rp "输入选项 [1/2/q]: " choice
+        case "$choice" in
+            1)
+                _migrate_docker_data_root
+                ;;
+            2)
+                _truncate_docker_json_logs
+                ;;
+            q|Q|'')
+                echo "已退出。"
+                ;;
+            *)
+                echo "无效选项。"
+                ;;
+        esac
+    else
+        echo "未检测到 Docker，开始安装..."
+        _install_docker_packages || { echo "安装失败"; return 1; }
+        echo "提示：如根盘空间较小，建议随后选择菜单再次执行本项进行目录迁移。"
+    fi
+}
+
+# 立即清空 Docker JSON 日志（按当前 Docker 根目录探测）
+function _truncate_docker_json_logs() {
+    local ROOT
+    ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)
+    [[ -z "$ROOT" ]] && ROOT="/var/lib/docker"
+    local LOG_DIR="$ROOT/containers"
+    if [[ ! -d "$LOG_DIR" ]]; then
+        echo "未找到日志目录：$LOG_DIR"
+        return 1
+    fi
+    echo "将清空日志目录中的 *-json.log 文件：$LOG_DIR"
+    local count=0
+    # 使用 find 避免路径太长或 glob 失败
+    while IFS= read -r f; do
+        sudo truncate -s 0 "$f" && ((count++)) || true
+    done < <(find "$LOG_DIR" -type f -name "*-json.log")
+    echo "✅ 已清空 $count 个容器日志文件"
 }
 
 function format_disk() {
@@ -1374,7 +1554,7 @@ while true; do
         3) disk_info ;;
         4) docker_info ;;
         5) format_disk ;;
-        7) install_docker ;;
+        7) install_or_migrate_docker ;;
         8) create_macvlan_network ;;
         9) clean_macvlan_network ;;
         10) install_portainer_watchtower ;;
