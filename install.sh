@@ -1491,30 +1491,38 @@ EOF
 #  功能 71：优化 Docker 日志（设置轮转）
 # =====================
 optimize_docker_logs() {
-    if [ "$EUID" -ne 0 ]; then echo "请以 root 权限运行"; return 1; fi
+    # 前置校验
+    if [ -z "$BASH_VERSION" ]; then exec /usr/bin/env bash "$0" "$@"; fi
+    if [ "$EUID" -ne 0 ]; then echo "请以 root 权限运行（sudo bash $0）"; return 1; fi
     if ! command -v docker >/dev/null 2>&1; then
-        echo "未检测到 Docker"; return 1
+        echo "未检测到 Docker，请先安装 Docker。"; return 1
     fi
 
     local DAEMON_JSON="/etc/docker/daemon.json"
-    local BAK="${DAEMON_JSON}.bak-$(date +%Y%m%d-%H%M%S)"
+    local BACKUP_SUFFIX; BACKUP_SUFFIX="$(date +%Y%m%d-%H%M%S)"
+    local TMP="/tmp/daemon.json.$$"
 
     mkdir -p "$(dirname "$DAEMON_JSON")"
 
-    # 备份旧文件
+    # 备份
     if [[ -f "$DAEMON_JSON" ]]; then
-        cp -a "$DAEMON_JSON" "$BAK"
-        echo "已备份为 $BAK"
+        cp -a "$DAEMON_JSON" "${DAEMON_JSON}.bak-${BACKUP_SUFFIX}"
+        echo "🧩 已备份 $DAEMON_JSON 为 ${DAEMON_JSON}.bak-${BACKUP_SUFFIX}"
     fi
 
-    # 读取原有 data-root，不动迁移后的配置
-    local CURRENT_ROOT
-    CURRENT_ROOT="$(sed -n 's/.*\"data-root\" *: *\"\\(.*\\)\".*/\\1/p' "$DAEMON_JSON")"
-
-    # 生成新的 daemon.json
-    tee "$DAEMON_JSON" >/dev/null <<EOF
+    if command -v jq >/dev/null 2>&1; then
+        # 用 jq 安全合并（保留其它键与 data-root，不覆盖非日志配置）
+        if [[ -s "$DAEMON_JSON" ]]; then
+            # 文件存在且非空 → 合并
+            if jq '.' "$DAEMON_JSON" >/dev/null 2>&1; then
+                jq '
+                  .["log-driver"] = "json-file"
+                  | .["log-opts"] = {"max-size":"20m","max-file":"3"}
+                ' "$DAEMON_JSON" > "$TMP"
+            else
+                # 文件存在但 JSON 语法损坏 → 重写，只写日志配置
+                cat > "$TMP" <<EOF
 {
-  $( [[ -n "$CURRENT_ROOT" ]] && echo "\"data-root\": \"$CURRENT_ROOT\"," )
   "log-driver": "json-file",
   "log-opts": {
     "max-size": "20m",
@@ -1522,10 +1530,64 @@ optimize_docker_logs() {
   }
 }
 EOF
+            fi
+        else
+            # 文件不存在或空 → 创建只含日志配置
+            cat > "$TMP" <<EOF
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "20m",
+    "max-file": "3"
+  }
+}
+EOF
+        fi
+        mv -f "$TMP" "$DAEMON_JSON"
+    else
+        # 没有 jq：尽力保留现有 data-root，再重写日志配置
+        local CURRENT_ROOT=""
+        # 先从 daemon.json 提取
+        if [[ -f "$DAEMON_JSON" ]]; then
+            CURRENT_ROOT="$(sed -n 's/.*"data-root"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' "$DAEMON_JSON" | head -n1)"
+        fi
+        # sed 没取到就从 docker info 兜底（不一定可靠，但尽量保留）
+        if [[ -z "$CURRENT_ROOT" ]]; then
+            CURRENT_ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+        fi
 
+        if [[ -n "$CURRENT_ROOT" ]]; then
+            cat > "$DAEMON_JSON" <<EOF
+{
+  "data-root": "$CURRENT_ROOT",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "20m",
+    "max-file": "3"
+  }
+}
+EOF
+        else
+            cat > "$DAEMON_JSON" <<EOF
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "20m",
+    "max-file": "3"
+  }
+}
+EOF
+        fi
+    fi
+
+    # 使配置生效
     systemctl daemon-reload
     systemctl restart docker
-    echo "✅ Docker 日志轮转已启用（未修改 data-root，兼容迁移目录）"
+
+    # 回显确认：不应改变 data-root
+    local ROOT_DIR
+    ROOT_DIR=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+    echo "✅ Docker 日志轮转已启用（20m x 3），当前 data-root：${ROOT_DIR:-未知}"
 }
 
 # ========== 主循环 ==========
