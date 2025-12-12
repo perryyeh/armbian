@@ -1362,40 +1362,6 @@ function run_watchtower_once() {
     echo "✅ watchtower 更新完成"
 }
 
-# ========== 主循环 ==========
-
-install_dependencies
-show_menu
-
-while true; do
-    read -p "请输入选项: " choice
-    case $choice in
-        0) show_menu ;;
-        1) os_info ;;
-        2) nic_info ;;
-        3) disk_info ;;
-        4) docker_info ;;
-        5) format_disk ;;
-        7) install_docker ;;
-        8) create_macvlan_network ;;
-        9) clean_macvlan_network ;;
-        10) install_portainer_watchtower ;;
-        11) install_librespeed ;;
-        14) install_adguardhome ;;
-        19) install_mosdns ;;
-        20) install_mihomo ;;
-        45) install_samba ;;
-        70) migrate_docker_datadir ;;
-        71) optimize_docker_logs ;;
-        90) create_macvlan_bridge ;;
-        91) clean_macvlan_bridge ;;
-        98) run_watchtower_once ;;
-        99) echo "退出脚本。"; exit 0 ;;
-        *) echo "无效选项，请重新输入。" ;;
-    esac
-done
-
-
 # =====================
 #  功能 70：迁移 Docker 目录
 # =====================
@@ -1541,4 +1507,40 @@ EOF
     systemctl restart docker
     echo "✅ 已设置 Docker 日志轮转（20m x 3），并保留 data-root=$CURRENT_ROOT"
 }
+
+# ========== 主循环 ==========
+
+install_dependencies
+show_menu
+
+while true; do
+    read -p "请输入选项: " choice
+    case $choice in
+        0) show_menu ;;
+        1) os_info ;;
+        2) nic_info ;;
+        3) disk_info ;;
+        4) docker_info ;;
+        5) format_disk ;;
+        7) install_docker ;;
+        8) create_macvlan_network ;;
+        9) clean_macvlan_network ;;
+        10) install_portainer_watchtower ;;
+        11) install_librespeed ;;
+        14) install_adguardhome ;;
+        19) install_mosdns ;;
+        20) install_mihomo ;;
+        45) install_samba ;;
+        70) migrate_docker_datadir ;;
+        71) optimize_docker_logs ;;
+        90) create_macvlan_bridge ;;
+        91) clean_macvlan_bridge ;;
+        98) run_watchtower_once ;;
+        99) echo "退出脚本。"; exit 0 ;;
+        *) echo "无效选项，请重新输入。" ;;
+    esac
+done
+
+
+
 
