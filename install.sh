@@ -1357,7 +1357,7 @@ function install_portainer() {
 
 function install_watchtower() {
     API=$(docker version --format '{{.Server.APIVersion}}')   # 预期=1.52
-    docker run --name=watchtower \
+    docker run --name=watchtower --rm \
       -e DOCKER_API_VERSION="$API" \
       -v /var/run/docker.sock:/var/run/docker.sock \
       containrrr/watchtower:latest \
