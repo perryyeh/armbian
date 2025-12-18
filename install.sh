@@ -981,7 +981,7 @@ EOF
     fi
 }
 
-install_mosdns() {
+function install_mosdns() {
     echo "🔧 安装 mosdns（docker compose + 固定 MAC，compose 文件来自仓库）"
 
     # 0) 选择 macvlan（回车退出）
@@ -992,15 +992,34 @@ install_mosdns() {
       *) return 1 ;;
     esac
 
-    # 1) 选择 mihomo/mosdns IPv4 最后一段（回车默认）
-    read -r -p "请输入 mihomo IPv4 最后一段（1-254，回车默认 120）: " mihomo_last
-    if [ -z "$mihomo_last" ]; then
-        mihomo_last=120
-    elif [[ ! "$mihomo_last" =~ ^[0-9]+$ ]] || [ "$mihomo_last" -lt 1 ] || [ "$mihomo_last" -gt 254 ]; then
-        echo "❌ 无效的 mihomo IPv4 最后一段：$mihomo_last"
-        return 1
+    # 1) 输入 mihomo 的 IPv4（全 IP；支持 Surge 里复制的形式；回车默认自动推算 120）
+    local mihomo_ip_input mihomo
+    read -r -p "请输入 mihomo IPv4（完整IP；可粘贴 Surge 显示的内容，回车默认自动推算 120）: " mihomo_ip_input
+
+    if [ -z "$mihomo_ip_input" ]; then
+        # 默认：按 120 自动推算
+        calculate_ip_mac 120
+        mihomo="$calculated_ip"
+        echo "📌 mihomo IPv4（默认推算）: $mihomo"
+    else
+        # 允许输入带端口等文本（如 10.0.1.120:7891），提取第一个 IPv4
+        mihomo=$(echo "$mihomo_ip_input" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)
+        if [ -z "$mihomo" ]; then
+            echo "❌ 未能从输入中解析出 IPv4：$mihomo_ip_input"
+            return 1
+        fi
+        # 校验每段 0-255
+        IFS='.' read -r o1 o2 o3 o4 <<< "$mihomo"
+        if [ -z "$o1" ] || [ -z "$o2" ] || [ -z "$o3" ] || [ -z "$o4" ] \
+          || [ "$o1" -gt 255 ] || [ "$o2" -gt 255 ] || [ "$o3" -gt 255 ] || [ "$o4" -gt 255 ]; then
+            echo "❌ IPv4 不合法：$mihomo"
+            return 1
+        fi
+        echo "📌 mihomo IPv4（解析结果）: $mihomo"
     fi
 
+    # 2) 选择 mosdns IPv4 最后一段（回车默认 119）
+    local mosdns_last
     read -r -p "请输入 mosdns IPv4 最后一段（1-254，回车默认 119）: " mosdns_last
     if [ -z "$mosdns_last" ]; then
         mosdns_last=119
@@ -1009,17 +1028,16 @@ install_mosdns() {
         return 1
     fi
 
-    # 2) 计算 IP（基于 SELECTED_MACVLAN）
-    calculate_ip_mac "$mihomo_last"
-    mihomo="$calculated_ip"
-
+    # 3) 计算 mosdns IP / IPv6 / MAC / 网关（基于 SELECTED_MACVLAN）
     calculate_ip_mac "$mosdns_last"
+    local mosdns mosdns6 mosdnsmac gateway
     mosdns="$calculated_ip"
     mosdns6="$calculated_ip6"
     mosdnsmac="$calculated_mac"
     gateway="$calculated_gateway"
 
-    # 3) 输入目录（回车退出）
+    # 4) 输入目录（回车退出）
+    local dockerapps
     read -r -p "即将安装 mosdns，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
     if [ -z "$dockerapps" ]; then
         echo "✅ 已退出 mosdns 安装。"
@@ -1029,17 +1047,17 @@ install_mosdns() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 4) 清理旧目录（保持你原习惯：重装就清掉）
+    # 5) 清理旧目录（重装就清掉）
     if [ -d "${dockerapps}/mosdns" ]; then
         echo "⚠️ 检测到 ${dockerapps}/mosdns 已存在，正在删除..."
         rm -rf "${dockerapps}/mosdns"
     fi
 
-    # 5) clone 仓库（仓库内自带 docker-compose.yml）
+    # 6) clone 仓库（仓库内自带 docker-compose.yml）
     git clone https://github.com/perryyeh/mosdns.git || return 1
     cd "${dockerapps}/mosdns" || return 1
 
-    # 6) 替换 config.yaml 里上游 mihomo / gateway（保持你原逻辑）
+    # 7) 替换 config.yaml 里上游 mihomo / gateway
     if [ -f "config.yaml" ]; then
         sed -i "s/198.18.0.2/${mihomo}/g" config.yaml
         if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
@@ -1050,7 +1068,7 @@ install_mosdns() {
         return 1
     fi
 
-    # 7) 写 .env（compose 读取）
+    # 8) 写 .env（compose 读取）
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
 mosdns4=${mosdns}
@@ -1062,7 +1080,7 @@ EOF
     cat .env
     echo
 
-    # 8) 启动（无 IPv6 就只用基础 compose；有 IPv6 再叠加 override）
+    # 9) 启动（无 IPv6 就只用基础 compose；有 IPv6 再叠加 override）
     docker rm -f mosdns >/dev/null 2>&1 || true
 
     if [ -n "$mosdns6" ]; then
@@ -1072,6 +1090,7 @@ EOF
     fi
 
     echo "✅ mosdns 已启动：${mosdns}"
+    echo "  上游 mihomo : ${mihomo}"
     echo "  macvlan 网络: ${SELECTED_MACVLAN}"
     echo "  MAC        : ${mosdnsmac}"
     if [ -n "$mosdns6" ]; then
