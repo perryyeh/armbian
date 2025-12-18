@@ -1171,10 +1171,9 @@ confdir=${dockerapps}/adguardhome/conf
 EOF
 
     # 7) 确保 conf 目录存在（给 AdGuardHome 持久化）
-    mkdir -p "${dockerapps}/adguardhome/conf" || return 1
 
     # 8) 如已存在 AdGuardHome.yaml，则替换上游（可选）
-    if [ -f "${dockerapps}/adguardhome/conf/AdGuardHome.yaml" ]; then
+    if [ -f "${dockerapps}/adguardhome/AdGuardHome.yaml" ]; then
         sed -i "s/10.0.1.119/${mosdns}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
         if [ -n "$mosdns6" ]; then
             sed -i "s/fd10:00:00::1:119/${mosdns6}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
