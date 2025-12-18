@@ -1167,7 +1167,7 @@ adguard4=${adguard}
 adguard6=${adguard6}
 adguardmac=${adguardmac}
 workdir=${dockerapps}/adguardwork
-confdir=${dockerapps}/adguardhome/conf
+confdir=${dockerapps}/adguardhome
 EOF
 
     # 7) 确保 conf 目录存在（给 AdGuardHome 持久化）
