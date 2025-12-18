@@ -981,7 +981,7 @@ EOF
     fi
 }
 
-function install_mosdns() {
+install_mosdns() {
     echo "🔧 安装 mosdns（docker compose + 固定 MAC，compose 文件来自仓库）"
 
     # 0) 选择 macvlan（回车退出）
@@ -1100,10 +1100,10 @@ EOF
     fi
 }
 
-install_adguardhome() {
-    echo "🔧 安装 AdGuardHome（需要选择 macvlan 网络）"
+function install_adguardhome() {
+    echo "🔧 安装 AdGuardHome（compose 模板来自 Git 仓库 + 固定 MAC）"
 
-    # 1) 选择 macvlan（回车退出）
+    # 0) 选择 macvlan（回车退出）
     select_macvlan_or_exit
     case $? in
       0) ;;
@@ -1111,72 +1111,102 @@ install_adguardhome() {
       *) return 1 ;;
     esac
 
-    # 2) 计算 IP（沿用你原来的：mosdns=119，adguard=114）
-    calculate_ip_mac 119
-    mosdns=$calculated_ip
-    mosdns6=$calculated_ip6
+    # 1) 选择上游 mosdns（用于替换 AdGuardHome.yaml，可选）
+    local mosdns_last
+    read -r -p "请输入 mosdns IPv4 最后一段（1-254，回车默认 119）: " mosdns_last
+    if [ -z "$mosdns_last" ]; then
+        mosdns_last=119
+    elif [[ ! "$mosdns_last" =~ ^[0-9]+$ ]] || [ "$mosdns_last" -lt 1 ] || [ "$mosdns_last" -gt 254 ]; then
+        echo "❌ 无效的 mosdns IPv4 最后一段：$mosdns_last"
+        return 1
+    fi
+    calculate_ip_mac "$mosdns_last"
+    local mosdns="$calculated_ip"
+    local mosdns6="$calculated_ip6"
+    local gateway="$calculated_gateway"
 
-    calculate_ip_mac 114
-    adguard=$calculated_ip
-    adguard6=$calculated_ip6
-    adguardmac=$calculated_mac
-    gateway=$calculated_gateway
+    # 2) 选择 AdGuardHome IPv4 最后一段（回车默认 114）
+    local adg_last
+    read -r -p "请输入 AdGuardHome IPv4 最后一段（1-254，回车默认 114）: " adg_last
+    if [ -z "$adg_last" ]; then
+        adg_last=114
+    elif [[ ! "$adg_last" =~ ^[0-9]+$ ]] || [ "$adg_last" -lt 1 ] || [ "$adg_last" -gt 254 ]; then
+        echo "❌ 无效的 AdGuardHome IPv4 最后一段：$adg_last"
+        return 1
+    fi
 
-    # 3) 目录（按你原来的交互）
-    read -r -p "即将安装 adguardhome，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
+    calculate_ip_mac "$adg_last"
+    local adguard="$calculated_ip"
+    local adguard6="$calculated_ip6"
+    local adguardmac="$calculated_mac"
+
+    # 3) 输入目录（回车退出）
+    local dockerapps
+    read -r -p "即将安装 AdGuardHome，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
     if [ -z "$dockerapps" ]; then
         echo "✅ 已退出 AdGuardHome 安装。"
         return 0
     fi
-    mkdir -p "${dockerapps}/adguardwork" "${dockerapps}/adguardhome" || return 1
 
-    # 4) 如存在配置文件则替换（有 IPv6 才替换 mosdns6）
-    if [ -f "${dockerapps}/adguardhome/AdGuardHome.yaml" ]; then
-        sed -i "s/10.0.1.119/${mosdns}/g" "${dockerapps}/adguardhome/AdGuardHome.yaml"
-        if [ -n "$mosdns6" ]; then
-            sed -i "s/fd10:00:00::1:119/${mosdns6}/g" "${dockerapps}/adguardhome/AdGuardHome.yaml"
-        fi
-        if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
-            sed -i "s/10.0.0.1/${gateway}/g" "${dockerapps}/adguardhome/AdGuardHome.yaml"
-        fi
-    else
-        echo "⚠️ 未找到 ${dockerapps}/adguardhome/AdGuardHome.yaml，跳过 sed 替换。"
+    mkdir -p "${dockerapps}/adguardwork" "${dockerapps}" || return 1
+
+    # 4) 清理旧目录（仓库 clone 目录）
+    if [ -d "${dockerapps}/adguardhome" ]; then
+        echo "⚠️ 检测到 ${dockerapps}/adguardhome 已存在，正在删除..."
+        rm -rf "${dockerapps}/adguardhome"
     fi
 
-    # 5) 启动容器（使用选择的 macvlan）
+    # 5) clone 仓库（仓库内自带 docker-compose.yml）
+    git clone https://github.com/perryyeh/adguardhome.git "${dockerapps}/adguardhome" || return 1
+    cd "${dockerapps}/adguardhome" || return 1
+
+    # 6) 写 .env（compose 读取）
+    cat > .env <<EOF
+MACVLAN_NET=${SELECTED_MACVLAN}
+adguard4=${adguard}
+adguard6=${adguard6}
+adguardmac=${adguardmac}
+workdir=${dockerapps}/adguardwork
+confdir=${dockerapps}/adguardhome/conf
+EOF
+
+    # 7) 确保 conf 目录存在（给 AdGuardHome 持久化）
+    mkdir -p "${dockerapps}/adguardhome/conf" || return 1
+
+    # 8) 如已存在 AdGuardHome.yaml，则替换上游（可选）
+    if [ -f "${dockerapps}/adguardhome/conf/AdGuardHome.yaml" ]; then
+        sed -i "s/10.0.1.119/${mosdns}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
+        if [ -n "$mosdns6" ]; then
+            sed -i "s/fd10:00:00::1:119/${mosdns6}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
+        fi
+        if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
+            sed -i "s/10.0.0.1/${gateway}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
+        fi
+    else
+        echo "ℹ️ 未找到 conf/AdGuardHome.yaml：首次启动后可在 WebUI 配置上游 DNS（或你之后再替换）。"
+    fi
+
+    echo "✅ 已生成 .env："
+    cat .env
+    echo
+
+    # 9) 启动（无 IPv6 就只用基础 compose；有 IPv6 再叠加 override）
     docker rm -f adguardhome >/dev/null 2>&1 || true
 
     if [ -n "$adguard6" ]; then
-        docker run -d \
-            --name=adguardhome \
-            --hostname=adguardhome \
-            --restart=always \
-            --network="$SELECTED_MACVLAN" \
-            --ip="${adguard}" \
-            --ip6="${adguard6}" \
-            --mac-address="${adguardmac}" \
-            -v "${dockerapps}/adguardwork:/opt/adguardhome/work" \
-            -v "${dockerapps}/adguardhome:/opt/adguardhome/conf" \
-            adguard/adguardhome
+        docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d
     else
-        docker run -d \
-            --name=adguardhome \
-            --hostname=adguardhome \
-            --restart=always \
-            --network="$SELECTED_MACVLAN" \
-            --ip="${adguard}" \
-            --mac-address="${adguardmac}" \
-            -v "${dockerapps}/adguardwork:/opt/adguardhome/work" \
-            -v "${dockerapps}/adguardhome:/opt/adguardhome/conf" \
-            adguard/adguardhome
+        docker compose -f docker-compose.yml up -d
     fi
 
-    echo "✅ AdGuardHome 已启动"
-    echo "访问地址：http://${adguard}"
+    echo "✅ AdGuardHome 已启动：${adguard}"
+    echo "  macvlan 网络: ${SELECTED_MACVLAN}"
+    echo "  MAC        : ${adguardmac}"
+    echo "  上游 mosdns : ${mosdns}"
     if [ -n "$adguard6" ]; then
-        echo "IPv6 地址：${adguard6}"
+        echo "  IPv6       : ${adguard6}"
     else
-        echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
+        echo "  IPv6       : 未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
     fi
 }
 
