@@ -16,30 +16,30 @@
 
 ## 🗂️ 脚本功能目录
 
-| 序号 | 功能描述                          |
-|----|-------------------------------|
-| 0  | 显示菜单                          |
-| 1  | 显示操作系统信息                      |
-| 2  | 显示网卡信息                        |
-| 3  | 显示磁盘信息                        |
-| 4  | 显示 Docker 信息                  |
-| 5  | 格式化磁盘并挂载                      |
-| 7  | 安装 Docker                     |
-| 8  | 创建macvlan（包括ipv4+ipv6）        |
-| 9  | 清理 macvlan                    |
+| 序号 | 功能描述                             |
+|----|----------------------------------|
+| 0  | 显示菜单                             |
+| 1  | 显示操作系统信息                         |
+| 2  | 显示网卡信息                           |
+| 3  | 显示磁盘信息                           |
+| 4  | 显示 Docker 信息                     |
+| 5  | 格式化磁盘并挂载                         |
+| 7  | 安装 Docker                        |
+| 8  | 创建macvlan（包括ipv4+ipv6）           |
+| 9  | 清理 macvlan                       |
 | 10 | 安装 Portainer 面板和 Watchtower 自动更新 |
-| 11 | 安装 LibreSpeed 测速              |
-| 14 | 安装 AdGuardHome                |
-| 19 | 安装 mosdns                     |
-| 20 | 安装 mihomo                     |
-| 45 | 安装 samba                      |
-| 70 | 迁移docker目录 |
-| 71 | 优化docker日志 |
-| 80 | 创建macvlan bridge              |
-| 90 | 清理macvlan bridge              |
-| 91 | 清理macvlan                     |
-| 98 | 强制使用watchtower更新一次镜像          |
-| 99 | 退出脚本                          |
+| 11 | 安装 LibreSpeed 测速                 |
+| 14 | 安装 AdGuardHome                   |
+| 19 | 安装 mosdns                        |
+| 20 | 安装 mihomo                        |
+| 45 | 安装 samba                         |
+| 70 | 迁移docker目录                       |
+| 71 | 优化docker日志                       |
+| 90 | 清理macvlan bridge                 |
+| 91 | 清理macvlan                        |
+| 97 | 安装watchtower                     |
+| 98 | 强制使用watchtower更新一次镜像             |
+| 99 | 退出脚本                             |
 
 
 ---
