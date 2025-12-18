@@ -64,6 +64,36 @@ function disk_info() { lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINT; }
 
 function docker_info() { docker info; }
 
+# 全局保存用户选择的 macvlan 网络名
+SELECTED_MACVLAN=""
+
+select_macvlan_or_exit() {
+    mapfile -t macvlan_networks < <(docker network ls --format '{{.Name}}' | grep '^macvlan' || true)
+    if [ ${#macvlan_networks[@]} -eq 0 ]; then
+        echo "❌ 未发现任何以 macvlan 开头的 Docker 网络，请先创建 macvlan 网络。"
+        return 1
+    fi
+
+    echo "可用的 macvlan 网络："
+    for i in "${!macvlan_networks[@]}"; do
+        echo "  $i) ${macvlan_networks[$i]}"
+    done
+
+    read -r -p "请输入要使用的 macvlan 序号（回车退出安装）: " choice
+    if [ -z "$choice" ]; then
+        echo "✅ 已退出安装。"
+        return 2
+    fi
+    if [[ ! "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 0 ] || [ "$choice" -ge "${#macvlan_networks[@]}" ]; then
+        echo "❌ 无效的序号：$choice"
+        return 1
+    fi
+
+    SELECTED_MACVLAN="${macvlan_networks[$choice]}"
+    echo "📡 选中的 macvlan 网络: $SELECTED_MACVLAN"
+    return 0
+}
+
 function install_docker() {
     . /etc/os-release
 
@@ -790,51 +820,90 @@ EOF
 }
 
 install_mihomo() {
-    calculate_ip_mac 120
+    echo "🔧 安装 mihomo（需要选择 macvlan 网络）"
+
+    # 1) 选择 macvlan（回车退出）
+    select_macvlan_or_exit
+    case $? in
+      0) ;;
+      2) return 0 ;;
+      *) return 1 ;;
+    esac
+
+    # 2) 选择 mihomo IPv4 最后一段（回车默认 120）
+    read -r -p "请输入 mihomo IPv4 最后一段（1-254，回车默认 120）: " mihomo_last
+    if [ -z "$mihomo_last" ]; then
+        mihomo_last=120
+    elif [[ ! "$mihomo_last" =~ ^[0-9]+$ ]] || [ "$mihomo_last" -lt 1 ] || [ "$mihomo_last" -gt 254 ]; then
+        echo "❌ 无效的 mihomo IPv4 最后一段：$mihomo_last"
+        return 1
+    fi
+    echo "📌 mihomo IPv4 最后一段：$mihomo_last"
+
+    # 3) 计算 IP / IPv6 / MAC / Gateway（基于 SELECTED_MACVLAN）
+    calculate_ip_mac "$mihomo_last"
     mihomo=$calculated_ip
     mihomo6=$calculated_ip6
     mihomomac=$calculated_mac
     gateway=$calculated_gateway
 
-    read -p "即将安装mihomo，请输入存储目录(例如 /data/dockerapps): " dockerapps
-    cd ${dockerapps}
-
-    # 删除旧目录
-    if [ -d "${dockerapps}/mihomo" ]; then
-      echo "⚠️ 检测到 ${dockerapps}/mihomo 已存在，正在删除..."
-      rm -rf ${dockerapps}/mihomo
+    # 4) 输入目录（回车退出）
+    read -r -p "即将安装 mihomo，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
+    if [ -z "$dockerapps" ]; then
+        echo "✅ 已退出 mihomo 安装。"
+        return 0
     fi
 
-    # 拉取配置仓库
-    git clone https://github.com/perryyeh/mihomo.git
+    mkdir -p "$dockerapps" || return 1
+    cd "$dockerapps" || return 1
 
-    cd ${dockerapps}/mihomo
+    # 5) 删除旧目录
+    if [ -d "${dockerapps}/mihomo" ]; then
+      echo "⚠️ 检测到 ${dockerapps}/mihomo 已存在，正在删除..."
+      rm -rf "${dockerapps}/mihomo"
+    fi
 
-    # 替换 config.yaml 里的网关
-    sed -i "s/10.0.0.1/$gateway/g" config.yaml
+    # 6) 拉取配置仓库
+    git clone https://github.com/perryyeh/mihomo.git || return 1
+    cd "${dockerapps}/mihomo" || return 1
 
-    # 生成 .env 文件供 docker compose 使用
+    # 7) 替换 config.yaml 里的网关（保持你原逻辑）
+    if [ -f "config.yaml" ] && [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
+        sed -i "s/10.0.0.1/${gateway}/g" config.yaml
+    fi
+
+    # 8) 让 docker-compose 使用你选的 macvlan（如果 compose 写死 name: macvlan）
+    if [ -f "docker-compose.yml" ]; then
+        if grep -qE 'name:\s*macvlan\b' docker-compose.yml; then
+            sed -i "s/name:\\s*macvlan\\b/name: ${SELECTED_MACVLAN}/g" docker-compose.yml
+        fi
+    else
+        echo "❌ 未找到 docker-compose.yml，请确认仓库中已包含该文件"
+        return 1
+    fi
+
+    # 9) 生成 .env 文件供 docker compose 使用（补充写入选中的 macvlan）
     cat > .env <<EOF
 mihomo4=${mihomo}
 mihomo6=${mihomo6}
 mihomomac=${mihomomac}
 dockerapps=${dockerapps}
+macvlan_name=${SELECTED_MACVLAN}
 EOF
 
     echo "✅ 已生成 .env 文件："
     cat .env
     echo
 
-    # 检查 docker-compose.yml
-    if [ ! -f docker-compose.yml ]; then
-      echo "❌ 未找到 docker-compose.yml，请确认仓库中已包含该文件"
-      return 1
-    fi
-
-    # 启动容器
+    # 10) 启动容器
     docker compose up -d
 
-    echo "mihomo 已启动！访问地址：http://$mihomo:9090/ui/  密码：admin"
+    echo "✅ mihomo 已启动！访问地址：http://${mihomo}:9090/ui/  密码：admin"
+    if [ -n "$mihomo6" ]; then
+        echo "IPv6：${mihomo6}"
+    else
+        echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
+    fi
 }
 
 # 安装samba
@@ -978,37 +1047,113 @@ EOF
     echo "  端口             : 445"
 }
 
-function install_mosdns() {
+install_mosdns() {
+    echo "🔧 安装 mosdns（需要选择 macvlan 网络）"
 
-    calculate_ip_mac 120
-    mihomo=$calculated_ip
+    # 1) 选择 macvlan（回车退出）
+    select_macvlan_or_exit
+    case $? in
+      0) ;;
+      2) return 0 ;;
+      *) return 1 ;;
+    esac
 
-    calculate_ip_mac 119
-    mosdns=$calculated_ip
-    mosdns6=$calculated_ip6
-    mosdnsmac=$calculated_mac
-    gateway=$calculated_gateway
+    # 2) 选择 mihomo IPv4 最后一段（回车默认 120）
+    read -r -p "请输入 mihomo IPv4 最后一段（1-254，回车默认 120）: " mihomo_last
+    if [ -z "$mihomo_last" ]; then
+        mihomo_last=120
+    elif [[ ! "$mihomo_last" =~ ^[0-9]+$ ]] || [ "$mihomo_last" -lt 1 ] || [ "$mihomo_last" -gt 254 ]; then
+        echo "❌ 无效的 mihomo IPv4 最后一段：$mihomo_last"
+        return 1
+    fi
+    echo "📌 mihomo IPv4 最后一段：$mihomo_last"
 
-    read -p "即将安装mosdns，请输入存储目录(例如 /data/dockerapps): " dockerapps
-    cd ${dockerapps}
+    calculate_ip_mac "$mihomo_last"
+    mihomo="$calculated_ip"
 
-    # 如果 mihomo 目录已存在则先删除
-    if [ -d "${dockerapps}/mosdns" ]; then
-      echo "⚠️ 检测到 ${dockerapps}/mosdns 已存在，正在删除..."
-      rm -rf ${dockerapps}/mosdns
+    # 3) 选择 mosdns IPv4 最后一段（回车默认 119）
+    read -r -p "请输入 mosdns IPv4 最后一段（1-254，回车默认 119）: " mosdns_last
+    if [ -z "$mosdns_last" ]; then
+        mosdns_last=119
+    elif [[ ! "$mosdns_last" =~ ^[0-9]+$ ]] || [ "$mosdns_last" -lt 1 ] || [ "$mosdns_last" -gt 254 ]; then
+        echo "❌ 无效的 mosdns IPv4 最后一段：$mosdns_last"
+        return 1
+    fi
+    echo "📌 mosdns IPv4 最后一段：$mosdns_last"
+
+    calculate_ip_mac "$mosdns_last"
+    mosdns="$calculated_ip"
+    mosdns6="$calculated_ip6"
+    mosdnsmac="$calculated_mac"
+    gateway="$calculated_gateway"
+
+    # 4) 输入目录（回车退出）
+    read -r -p "即将安装 mosdns，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
+    if [ -z "$dockerapps" ]; then
+        echo "✅ 已退出 mosdns 安装。"
+        return 0
     fi
 
-    git clone https://github.com/perryyeh/mosdns.git
-    sed -i "s/198.18.0.2/$mihomo/g" ${dockerapps}/mosdns/config.yaml
-    sed -i "s/10.0.0.1/$gateway/g" ${dockerapps}/mosdns/config.yaml
+    mkdir -p "$dockerapps" || return 1
+    cd "$dockerapps" || return 1
 
-    docker run -d --name=mosdns --hostname=mosdns --restart=always --network=macvlan \
-    --ip=${mosdns} --ip6=${mosdns6} --mac-address=${mosdnsmac} \
-    -v ${dockerapps}/mosdns:/etc/mosdns irinesistiana/mosdns
+    # 5) 清理旧目录
+    if [ -d "${dockerapps}/mosdns" ]; then
+      echo "⚠️ 检测到 ${dockerapps}/mosdns 已存在，正在删除..."
+      rm -rf "${dockerapps}/mosdns"
+    fi
+
+    # 6) 拉取配置并替换
+    git clone https://github.com/perryyeh/mosdns.git || return 1
+    sed -i "s/198.18.0.2/${mihomo}/g" "${dockerapps}/mosdns/config.yaml"
+    sed -i "s/10.0.0.1/${gateway}/g" "${dockerapps}/mosdns/config.yaml"
+
+    # 7) 启动容器（使用选择的 macvlan）
+    docker rm -f mosdns >/dev/null 2>&1 || true
+
+    if [ -n "$mosdns6" ]; then
+        docker run -d \
+          --name=mosdns \
+          --hostname=mosdns \
+          --restart=always \
+          --network="$SELECTED_MACVLAN" \
+          --ip="${mosdns}" \
+          --ip6="${mosdns6}" \
+          --mac-address="${mosdnsmac}" \
+          -v "${dockerapps}/mosdns:/etc/mosdns" \
+          irinesistiana/mosdns
+    else
+        docker run -d \
+          --name=mosdns \
+          --hostname=mosdns \
+          --restart=always \
+          --network="$SELECTED_MACVLAN" \
+          --ip="${mosdns}" \
+          --mac-address="${mosdnsmac}" \
+          -v "${dockerapps}/mosdns:/etc/mosdns" \
+          irinesistiana/mosdns
+    fi
+
+    echo "✅ mosdns 已启动：${mosdns}"
+    if [ -n "$mosdns6" ]; then
+        echo "IPv6：${mosdns6}"
+    else
+        echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
+    fi
 }
 
 function install_adguardhome() {
+    echo "🔧 安装 AdGuardHome（需要选择 macvlan 网络）"
 
+    # 1) 选择 macvlan（回车退出）
+    select_macvlan_or_exit
+    case $? in
+      0) ;;
+      2) return 0 ;;
+      *) return 1 ;;
+    esac
+
+    # 2) 计算 IP（沿用你原来的：mosdns=119，adguard=114）
     calculate_ip_mac 119
     mosdns=$calculated_ip
     mosdns6=$calculated_ip6
@@ -1019,124 +1164,93 @@ function install_adguardhome() {
     adguardmac=$calculated_mac
     gateway=$calculated_gateway
 
-    read -p "即将安装adguardhome，请输入存储目录(例如 /data/dockerapps): " dockerapps
-    cd ${dockerapps}
-
-
-    # 如果 mihomo 目录已存在则先删除
-    if [ -d "${dockerapps}/adguardhome" ]; then
-      echo "⚠️ 检测到 ${dockerapps}/adguardhome 已存在，正在删除..."
-      rm -rf ${dockerapps}/adguardhome
-    fi
-
-    # 生成adguard work目录
-    mkdir -p adguardwork
-
-    git clone https://github.com/perryyeh/adguardhome.git
-
-
-    # 等待文件生成，最多等 10 秒
-    for i in {1..30}; do
-        if [ -f "${dockerapps}/adguardhome/AdGuardHome.yaml" ]; then
-            echo "✅ 配置文件已生成，开始修改..."
-            break
-        else
-            echo "⏳ 等待配置文件生成中 ($i/10)..."
-            sleep 1
-        fi
-    done
-
-    # 再次检查并 sed
-    if [ -f "${dockerapps}/adguardhome/AdGuardHome.yaml" ]; then
-        sed -i "s/10.0.1.119/$mosdns/g;" ${dockerapps}/adguardhome/AdGuardHome.yaml
-        sed -i "s/fd10:00:00::1:119/$mosdns6/g;" ${dockerapps}/adguardhome/AdGuardHome.yaml
-        sed -i "s/10.0.0.1/$gateway/g" ${dockerapps}/adguardhome/AdGuardHome.yaml
-    else
-        echo "❌ 配置文件跳过sed替换，请自行更改AdGuardHome.yaml中mosdns和gateway配置"
-    fi
-
-    docker run -d --name=adguardhome --hostname=adguardhome --restart=always --network=macvlan \
-    --ip=${adguard} --ip6=${adguard6} --mac-address=${adguardmac} \
-    -v ${dockerapps}/adguardwork:/opt/adguardhome/work \
-    -v ${dockerapps}/adguardhome:/opt/adguardhome/conf \
-    adguard/adguardhome
-
-    echo "adguardhome 访问地址：http://$adguard  用户名admin 密码admin"
-}
-
-
-function install_librespeed() {
-    echo "🔧 开始安装 LibreSpeed（请选择要使用的 macvlan 网络）"
-
-    # 1) 列出所有 macvlan 网络
-    mapfile -t macvlan_networks < <(docker network ls --format '{{.Name}}' | grep '^macvlan' || true)
-    if [ ${#macvlan_networks[@]} -eq 0 ]; then
-        echo "❌ 未发现任何以 macvlan 开头的 Docker 网络，请先创建 macvlan 网络。"
-        return 1
-    fi
-
-    echo "可用的 macvlan 网络："
-    for i in "${!macvlan_networks[@]}"; do
-        echo "  $i) ${macvlan_networks[$i]}"
-    done
-
-    # 2) 选择 macvlan（回车退出）
-    read -r -p "请输入要用于 LibreSpeed 的 macvlan 序号（回车退出安装）: " choice
-    if [ -z "$choice" ]; then
-        echo "✅ 已退出 LibreSpeed 安装。"
+    # 3) 目录（按你原来的交互）
+    read -r -p "即将安装 adguardhome，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
+    if [ -z "$dockerapps" ]; then
+        echo "✅ 已退出 AdGuardHome 安装。"
         return 0
     fi
-    if [[ ! "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 0 ] || [ "$choice" -ge "${#macvlan_networks[@]}" ]; then
-        echo "❌ 无效的序号：$choice"
-        return 1
-    fi
-    local selected_macvlan="${macvlan_networks[$choice]}"
-    echo "📡 选中的 macvlan 网络: $selected_macvlan"
+    mkdir -p "${dockerapps}/adguardwork" "${dockerapps}/adguardhome" || return 1
 
-    # 3) 基于所选 macvlan 网络计算 IP/MAC（沿用你原先的 111 号位逻辑）
-    local last_octet=111
-    local network_info iprange iprange6 iprangev4 ipv6_prefix
-    local librespeed librespeed6 librespeedmac
-    local enable_ipv6
-
-    network_info=$(docker network inspect "$selected_macvlan" 2>/dev/null) || {
-        echo "❌ 无法读取网络信息：$selected_macvlan"
-        return 1
-    }
-
-    # IPv4：优先用 IPRange，没填就回退 Subnet
-    iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | (.IPRange // empty)')
-    if [ -z "$iprange" ] || [ "$iprange" = "null" ]; then
-        iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Subnet' | head -n1)
-    fi
-    if [ -z "$iprange" ] || [ "$iprange" = "null" ]; then
-        echo "❌ 所选网络没有 IPv4 Subnet/IPRange，无法分配 IPv4 地址。"
-        return 1
-    fi
-
-    iprangev4=$(echo "$iprange" | cut -d'/' -f1)
-    librespeed="${iprangev4%.*}.$last_octet"
-    librespeedmac=$(ip_to_mac "$librespeed")
-
-    # IPv6：只有网络 EnableIPv6=true 且存在 IPv6 Subnet 才给 --ip6
-    enable_ipv6=$(echo "$network_info" | jq -r '.[0].EnableIPv6 // false')
-    iprange6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet' | head -n1)
-
-    librespeed6=""
-    if [ "$enable_ipv6" = "true" ] && [ -n "$iprange6" ] && [ "$iprange6" != "null" ]; then
-        ipv6_prefix=$(echo "$iprange6" | cut -d'/' -f1)
-        local ipv4_third ipv4_fourth
-        ipv4_third=$(echo "$librespeed" | cut -d'.' -f3)
-        ipv4_fourth=$(echo "$librespeed" | cut -d'.' -f4)
-
-        if [[ "$ipv6_prefix" == *"::" ]]; then
-            librespeed6="${ipv6_prefix}${ipv4_third}:${ipv4_fourth}"
-        else
-            librespeed6="${ipv6_prefix}::${ipv4_third}:${ipv4_fourth}"
+    # 4) 如存在配置文件则替换（有 IPv6 才替换 mosdns6）
+    if [ -f "${dockerapps}/adguardhome/AdGuardHome.yaml" ]; then
+        sed -i "s/10.0.1.119/${mosdns}/g" "${dockerapps}/adguardhome/AdGuardHome.yaml"
+        if [ -n "$mosdns6" ]; then
+            sed -i "s/fd10:00:00::1:119/${mosdns6}/g" "${dockerapps}/adguardhome/AdGuardHome.yaml"
         fi
+        if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
+            sed -i "s/10.0.0.1/${gateway}/g" "${dockerapps}/adguardhome/AdGuardHome.yaml"
+        fi
+    else
+        echo "⚠️ 未找到 ${dockerapps}/adguardhome/AdGuardHome.yaml，跳过 sed 替换。"
     fi
 
-    # 4) 安装/重建容器
+    # 5) 启动容器（使用选择的 macvlan）
+    docker rm -f adguardhome >/dev/null 2>&1 || true
+
+    if [ -n "$adguard6" ]; then
+        docker run -d \
+            --name=adguardhome \
+            --hostname=adguardhome \
+            --restart=always \
+            --network="$SELECTED_MACVLAN" \
+            --ip="${adguard}" \
+            --ip6="${adguard6}" \
+            --mac-address="${adguardmac}" \
+            -v "${dockerapps}/adguardwork:/opt/adguardhome/work" \
+            -v "${dockerapps}/adguardhome:/opt/adguardhome/conf" \
+            adguard/adguardhome
+    else
+        docker run -d \
+            --name=adguardhome \
+            --hostname=adguardhome \
+            --restart=always \
+            --network="$SELECTED_MACVLAN" \
+            --ip="${adguard}" \
+            --mac-address="${adguardmac}" \
+            -v "${dockerapps}/adguardwork:/opt/adguardhome/work" \
+            -v "${dockerapps}/adguardhome:/opt/adguardhome/conf" \
+            adguard/adguardhome
+    fi
+
+    echo "✅ AdGuardHome 已启动"
+    echo "访问地址：http://${adguard}"
+    if [ -n "$adguard6" ]; then
+        echo "IPv6 地址：${adguard6}"
+    else
+        echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
+    fi
+}
+
+function install_librespeed() {
+    echo "🔧 安装 LibreSpeed（需要选择 macvlan 网络）"
+
+    # 1) 选择 macvlan（回车退出）
+    select_macvlan_or_exit
+    case $? in
+      0) ;;
+      2) return 0 ;;
+      *) return 1 ;;
+    esac
+
+    # 2) 选择 IPv4 最后一段（回车默认 111）
+    read -r -p "请输入 LibreSpeed IPv4 最后一段（1-254，回车默认 111）: " last_octet
+    if [ -z "$last_octet" ]; then
+        last_octet=111
+    elif [[ ! "$last_octet" =~ ^[0-9]+$ ]] || [ "$last_octet" -lt 1 ] || [ "$last_octet" -gt 254 ]; then
+        echo "❌ 无效的 IPv4 最后一段：$last_octet"
+        return 1
+    fi
+
+    echo "📌 使用 IPv4 最后一段：$last_octet"
+
+    # 3) 计算 IP / IPv6 / MAC（基于 SELECTED_MACVLAN）
+    calculate_ip_mac "$last_octet"
+    librespeed=$calculated_ip
+    librespeed6=$calculated_ip6
+    librespeedmac=$calculated_mac
+
+    # 4) 重建容器
     docker rm -f librespeed >/dev/null 2>&1 || true
 
     if [ -n "$librespeed6" ]; then
@@ -1144,7 +1258,7 @@ function install_librespeed() {
             --name=librespeed \
             --hostname=librespeed \
             --restart=always \
-            --network="$selected_macvlan" \
+            --network="$SELECTED_MACVLAN" \
             --ip="$librespeed" \
             --ip6="$librespeed6" \
             --mac-address="$librespeedmac" \
@@ -1154,7 +1268,7 @@ function install_librespeed() {
             --name=librespeed \
             --hostname=librespeed \
             --restart=always \
-            --network="$selected_macvlan" \
+            --network="$SELECTED_MACVLAN" \
             --ip="$librespeed" \
             --mac-address="$librespeedmac" \
             linuxserver/librespeed:latest
@@ -1170,47 +1284,67 @@ function install_librespeed() {
 }
 
 function calculate_ip_mac() {
-
   local last_octet=$1
+  local net_name="${2:-${SELECTED_MACVLAN:-macvlan}}"
 
   if [[ ! "$last_octet" =~ ^[0-9]+$ ]]; then
     echo "❌ calculate_ip_mac 输入无效: $last_octet"
     return 1
   fi
 
+  # 1) 获取 docker 网络配置（改为可选网络名）
+  network_info=$(docker network inspect "$net_name" 2>/dev/null) || {
+    echo "❌ 无法读取网络信息：$net_name"
+    return 1
+  }
 
-  # 1. 获取 docker macvlan 网络配置
-  network_info=$(docker network inspect macvlan)
+  # 2) IPv4：优先 IPRange，否则 Subnet
+  local iprange subnet gateway
+  iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | (.IPRange // empty)' | head -n1)
+  subnet=$(echo  "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Subnet' | head -n1)
+  gateway=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | (.Gateway // empty)' | head -n1)
 
-  iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .IPRange')
-  iprange6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet')
-
-  gateway=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Gateway | test(":") | not) | .Gateway')
-  gateway6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Gateway | test(":")) | .Gateway')
-
-  iprangev4=$(echo $iprange | cut -d'/' -f1)
-  iprangev6_prefix=$(echo $iprange6 | cut -d'/' -f1)
-
-  # 2. 计算 IPv4
-  ip="${iprangev4%.*}.$last_octet"
-
-  # 3. 计算 IPv6
-  if [ -n "$iprangev6_prefix" ]; then
-    ipv4_third=$(echo $ip | cut -d'.' -f3)
-    ipv4_fourth=$(echo $ip | cut -d'.' -f4)
-    if [[ "$iprangev6_prefix" == *"::" ]]; then
-      ip6="${iprangev6_prefix}${ipv4_third}:${ipv4_fourth}"
-    else
-      ip6="${iprangev6_prefix}::${ipv4_third}:${ipv4_fourth}"
-    fi
+  local base4
+  if [ -n "$iprange" ] && [ "$iprange" != "null" ]; then
+    base4=$(echo "$iprange" | cut -d'/' -f1)
   else
-    ip6=""
+    base4=$(echo "$subnet" | cut -d'/' -f1)
+  fi
+  if [ -z "$base4" ] || [ "$base4" = "null" ]; then
+    echo "❌ 网络 $net_name 没有 IPv4 Subnet/IPRange"
+    return 1
   fi
 
-  # 4. MAC 生成
-  mac=$(ip_to_mac $ip)
+  local ip="${base4%.*}.${last_octet}"
 
-  # 5. 输出
+  # 3) IPv6：仅当 EnableIPv6=true 且存在 IPv6 Subnet 才生成 ip6（避免 RA-only 网关坑）
+  local enable_ipv6 subnet6 gateway6 ip6_prefix ip6
+  enable_ipv6=$(echo "$network_info" | jq -r '.[0].EnableIPv6 // false')
+  subnet6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet' | head -n1)
+  gateway6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | (.Gateway // empty)' | head -n1)
+
+  ip6=""
+  if [ "$enable_ipv6" = "true" ] && [ -n "$subnet6" ] && [ "$subnet6" != "null" ]; then
+    ip6_prefix=$(echo "$subnet6" | cut -d'/' -f1)
+    local v4_3 v4_4
+    v4_3=$(echo "$ip" | cut -d'.' -f3)
+    v4_4=$(echo "$ip" | cut -d'.' -f4)
+
+    if [[ "$ip6_prefix" == *"::" ]]; then
+      ip6="${ip6_prefix}${v4_3}:${v4_4}"
+    else
+      ip6="${ip6_prefix}::${v4_3}:${v4_4}"
+    fi
+  else
+    gateway6=""
+  fi
+
+  # 4) MAC
+  local mac
+  mac=$(ip_to_mac "$ip")
+
+  # 5) 输出/回填
+  echo "Network: $net_name"
   echo "IPv4: $ip"
   echo "IPv6: $ip6"
   echo "MAC: $mac"
@@ -1223,7 +1357,6 @@ function calculate_ip_mac() {
   calculated_gateway=$gateway
   calculated_gateway6=$gateway6
 }
-
 
 # ========== 删除 docker macvlan 网络 ==========
 clean_macvlan_network() {
