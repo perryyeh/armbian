@@ -54,15 +54,7 @@ function show_menu() {
     echo "============================"
 }
 
-# ========== 功能函数 ==========
-
-function os_info() { cat /etc/os-release; }
-
-function nic_info() { ip addr; }
-
-function disk_info() { lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINT; }
-
-function docker_info() { docker info; }
+# ========== 工具函数 ==========
 
 # 全局保存用户选择的 macvlan 网络名
 SELECTED_MACVLAN=""
@@ -94,38 +86,178 @@ select_macvlan_or_exit() {
     return 0
 }
 
-function install_docker() {
-    . /etc/os-release
-
-    sudo apt-get update
-    sudo apt-get install -y ca-certificates curl gnupg lsb-release
-
-    sudo install -m 0755 -d /etc/apt/keyrings
-
-    if [[ "$ID" == "debian" ]]; then
-        sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
-        sudo chmod a+r /etc/apt/keyrings/docker.asc
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-    elif [[ "$ID" == "ubuntu" ]]; then
-        sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-        sudo chmod a+r /etc/apt/keyrings/docker.asc
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-    else
-        echo "当前系统 $ID 不在支持范围内，请手动安装 Docker。"
-        return 1
-    fi
-
-    sudo apt-get update
-    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-    sudo systemctl enable docker
-    sudo systemctl start docker
-
-    echo "✅ Docker 安装完成，版本信息："
-    docker --version
+# 计算IP地址对应MAC地址
+ip_to_mac() {
+  IFS='.' read -r ip1 ip2 ip3 ip4 <<< "$1"
+  printf '86:88:%02x:%02x:%02x:%02x\n' $ip1 $ip2 $ip3 $ip4
 }
+
+# 计算IPv4对应IPv6前缀
+ipv4_to_ipv6_prefix() {
+  local ip=$1
+  local first_octet=$(echo $ip | cut -d'.' -f1)
+  local second_octet=$(echo $ip | cut -d'.' -f2)
+  local third_octet=$(echo $ip | cut -d'.' -f3)
+
+  if [[ "$first_octet" == "10" ]]; then
+    prefix="fd10"
+  elif [[ "$first_octet" == "172" ]]; then
+    prefix="fd17"
+  elif [[ "$first_octet" == "192" ]]; then
+    prefix="fd19"
+  else
+    prefix="fd00"
+  fi
+
+  echo "${prefix}:${second_octet}:${third_octet}"
+}
+
+# 获取网卡子网
+get_subnet_v4() {
+  local ip=$1
+  local iface=$2
+  local cidr=$(ip route | grep -v "^default" | grep "$iface" | grep "$ip" | awk '{print $1}')
+  if [ -z "$cidr" ]; then
+    local netmask=$(ip -4 addr show $iface | grep inet | awk '{print $2}' | cut -d'/' -f2)
+    cidr=$(ipcalc -n $ip/$netmask | grep Network | awk '{print $2}')
+  fi
+  echo $cidr
+}
+
+# ---- IPv4 计算工具 ----
+ipv4_to_int() { local IFS=.; read -r a b c d <<<"$1"; echo $(( (a<<24)+(b<<16)+(c<<8)+d )); }
+
+mask_from_len() { local l="$1"; echo $(( (0xFFFFFFFF << (32-l)) & 0xFFFFFFFF )); }
+
+cidr_contains_ip() {
+  local ip="$1" cidr="$2" net="${cidr%/*}" len="${cidr#*/}"
+  local ipi neti mask; ipi=$(ipv4_to_int "$ip"); neti=$(ipv4_to_int "$net"); mask=$(mask_from_len "$len")
+  (( (ipi & mask) == (neti & mask) ))
+}
+
+calculate_ip_mac() {
+  local last_octet=$1
+  local net_name="${2:-${SELECTED_MACVLAN:-macvlan}}"
+
+  if [[ ! "$last_octet" =~ ^[0-9]+$ ]]; then
+    echo "❌ calculate_ip_mac 输入无效: $last_octet"
+    return 1
+  fi
+
+  # 1) 获取 docker 网络配置（改为可选网络名）
+  network_info=$(docker network inspect "$net_name" 2>/dev/null) || {
+    echo "❌ 无法读取网络信息：$net_name"
+    return 1
+  }
+
+  # 2) IPv4：优先 IPRange，否则 Subnet
+  local iprange subnet gateway
+  iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | (.IPRange // empty)' | head -n1)
+  subnet=$(echo  "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Subnet' | head -n1)
+  gateway=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | (.Gateway // empty)' | head -n1)
+
+  local base4
+  if [ -n "$iprange" ] && [ "$iprange" != "null" ]; then
+    base4=$(echo "$iprange" | cut -d'/' -f1)
+  else
+    base4=$(echo "$subnet" | cut -d'/' -f1)
+  fi
+  if [ -z "$base4" ] || [ "$base4" = "null" ]; then
+    echo "❌ 网络 $net_name 没有 IPv4 Subnet/IPRange"
+    return 1
+  fi
+
+  local ip="${base4%.*}.${last_octet}"
+
+  # 3) IPv6：仅当 EnableIPv6=true 且存在 IPv6 Subnet 才生成 ip6（避免 RA-only 网关坑）
+  local enable_ipv6 subnet6 gateway6 ip6_prefix ip6
+  enable_ipv6=$(echo "$network_info" | jq -r '.[0].EnableIPv6 // false')
+  subnet6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet' | head -n1)
+  gateway6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | (.Gateway // empty)' | head -n1)
+
+  ip6=""
+  if [ "$enable_ipv6" = "true" ] && [ -n "$subnet6" ] && [ "$subnet6" != "null" ]; then
+    ip6_prefix=$(echo "$subnet6" | cut -d'/' -f1)
+    local v4_3 v4_4
+    v4_3=$(echo "$ip" | cut -d'.' -f3)
+    v4_4=$(echo "$ip" | cut -d'.' -f4)
+
+    if [[ "$ip6_prefix" == *"::" ]]; then
+      ip6="${ip6_prefix}${v4_3}:${v4_4}"
+    else
+      ip6="${ip6_prefix}::${v4_3}:${v4_4}"
+    fi
+  else
+    gateway6=""
+  fi
+
+  # 4) MAC
+  local mac
+  mac=$(ip_to_mac "$ip")
+
+  # 5) 输出/回填
+  echo "Network: $net_name"
+  echo "IPv4: $ip"
+  echo "IPv6: $ip6"
+  echo "MAC: $mac"
+  echo "Gateway: $gateway"
+  echo "Gateway6: $gateway6"
+
+  calculated_ip=$ip
+  calculated_ip6=$ip6
+  calculated_mac=$mac
+  calculated_gateway=$gateway
+  calculated_gateway6=$gateway6
+}
+
+# ---- 自动探测 mihomo 下一跳 IP（返回一个 IPv4 或空串）----
+# 参数1: route4_cidr（如 10.86.21.0/24 或 /23）
+# 参数2: network_info（docker network inspect 的 JSON 字符串）
+detect_mihomo_ip() {
+  local _route4="$1" _netinfo="$2"
+
+  # 1) 环境变量优先（大写/小写都支持）
+  if [ -n "$MIHOMO" ]; then echo "$MIHOMO"; return; fi
+  if [ -n "$mihomo" ]; then echo "$mihomo"; return; fi
+
+  # 2) systemd 环境文件（可选）
+  if [ -f /etc/default/macvlan_env ]; then
+    # shellcheck source=/dev/null
+    . /etc/default/macvlan_env
+    if [ -n "$MIHOMO" ]; then echo "$MIHOMO"; return; fi
+    if [ -n "$mihomo" ]; then echo "$mihomo"; return; fi
+  fi
+
+  # 3) Docker 容器：名称含 mihomo/clash/clash-meta 的容器；优先选与 _route4 同网段的 IP
+  local ids iplist ip best=""
+  ids=$(docker ps --format '{{.ID}} {{.Names}}' | grep -Ei '(^|[ _-])(mihomo|clash-meta|clash)($|[ _-])' | awk '{print $1}')
+  for id in $ids; do
+    iplist=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$id")
+    for ip in $iplist; do
+      if [ -n "$ip" ] && [ -n "$_route4" ] && cidr_contains_ip "$ip" "$_route4"; then
+        echo "$ip"; return
+      fi
+      [ -z "$best" ] && best="$ip"
+    done
+  done
+  [ -n "$best" ] && { echo "$best"; return; }
+
+  # 4) 回退到 macvlan 的 IPv4 网关
+  local gw4
+  gw4=$(echo "$_netinfo" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Gateway // empty' | head -n1)
+  [ -n "$gw4" ] && { echo "$gw4"; return; }
+
+  # 5) 无可用
+  echo ""
+}
+
+# ========== 功能函数 ==========
+
+function os_info() { cat /etc/os-release; }
+
+function nic_info() { ip addr; }
+
+function disk_info() { lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINT; }
 
 function format_disk() {
   echo "📝 当前磁盘列表："
@@ -185,96 +317,39 @@ function format_disk() {
   fi
 }
 
-# ========== 工具函数 ==========
+function docker_info() { docker info; }
 
-# 计算IP地址对应MAC地址
-ip_to_mac() {
-  IFS='.' read -r ip1 ip2 ip3 ip4 <<< "$1"
-  printf '86:88:%02x:%02x:%02x:%02x\n' $ip1 $ip2 $ip3 $ip4
-}
+function install_docker() {
+    . /etc/os-release
 
-# 计算IPv4对应IPv6前缀
-ipv4_to_ipv6_prefix() {
-  local ip=$1
-  local first_octet=$(echo $ip | cut -d'.' -f1)
-  local second_octet=$(echo $ip | cut -d'.' -f2)
-  local third_octet=$(echo $ip | cut -d'.' -f3)
+    sudo apt-get update
+    sudo apt-get install -y ca-certificates curl gnupg lsb-release
 
-  if [[ "$first_octet" == "10" ]]; then
-    prefix="fd10"
-  elif [[ "$first_octet" == "172" ]]; then
-    prefix="fd17"
-  elif [[ "$first_octet" == "192" ]]; then
-    prefix="fd19"
-  else
-    prefix="fd00"
-  fi
+    sudo install -m 0755 -d /etc/apt/keyrings
 
-  echo "${prefix}:${second_octet}:${third_octet}"
-}
+    if [[ "$ID" == "debian" ]]; then
+        sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+        sudo chmod a+r /etc/apt/keyrings/docker.asc
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-# 获取网卡子网
-get_subnet_v4() {
-  local ip=$1
-  local iface=$2
-  local cidr=$(ip route | grep -v "^default" | grep "$iface" | grep "$ip" | awk '{print $1}')
-  if [ -z "$cidr" ]; then
-    local netmask=$(ip -4 addr show $iface | grep inet | awk '{print $2}' | cut -d'/' -f2)
-    cidr=$(ipcalc -n $ip/$netmask | grep Network | awk '{print $2}')
-  fi
-  echo $cidr
-}
+    elif [[ "$ID" == "ubuntu" ]]; then
+        sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        sudo chmod a+r /etc/apt/keyrings/docker.asc
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-# ---- IPv4 计算工具 ----
-ipv4_to_int() { local IFS=.; read -r a b c d <<<"$1"; echo $(( (a<<24)+(b<<16)+(c<<8)+d )); }
+    else
+        echo "当前系统 $ID 不在支持范围内，请手动安装 Docker。"
+        return 1
+    fi
 
-mask_from_len() { local l="$1"; echo $(( (0xFFFFFFFF << (32-l)) & 0xFFFFFFFF )); }
+    sudo apt-get update
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-cidr_contains_ip() {
-  local ip="$1" cidr="$2" net="${cidr%/*}" len="${cidr#*/}"
-  local ipi neti mask; ipi=$(ipv4_to_int "$ip"); neti=$(ipv4_to_int "$net"); mask=$(mask_from_len "$len")
-  (( (ipi & mask) == (neti & mask) ))
-}
+    sudo systemctl enable docker
+    sudo systemctl start docker
 
-# ---- 自动探测 mihomo 下一跳 IP（返回一个 IPv4 或空串）----
-# 参数1: route4_cidr（如 10.86.21.0/24 或 /23）
-# 参数2: network_info（docker network inspect 的 JSON 字符串）
-detect_mihomo_ip() {
-  local _route4="$1" _netinfo="$2"
-
-  # 1) 环境变量优先（大写/小写都支持）
-  if [ -n "$MIHOMO" ]; then echo "$MIHOMO"; return; fi
-  if [ -n "$mihomo" ]; then echo "$mihomo"; return; fi
-
-  # 2) systemd 环境文件（可选）
-  if [ -f /etc/default/macvlan_env ]; then
-    # shellcheck source=/dev/null
-    . /etc/default/macvlan_env
-    if [ -n "$MIHOMO" ]; then echo "$MIHOMO"; return; fi
-    if [ -n "$mihomo" ]; then echo "$mihomo"; return; fi
-  fi
-
-  # 3) Docker 容器：名称含 mihomo/clash/clash-meta 的容器；优先选与 _route4 同网段的 IP
-  local ids iplist ip best=""
-  ids=$(docker ps --format '{{.ID}} {{.Names}}' | grep -Ei '(^|[ _-])(mihomo|clash-meta|clash)($|[ _-])' | awk '{print $1}')
-  for id in $ids; do
-    iplist=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$id")
-    for ip in $iplist; do
-      if [ -n "$ip" ] && [ -n "$_route4" ] && cidr_contains_ip "$ip" "$_route4"; then
-        echo "$ip"; return
-      fi
-      [ -z "$best" ] && best="$ip"
-    done
-  done
-  [ -n "$best" ] && { echo "$best"; return; }
-
-  # 4) 回退到 macvlan 的 IPv4 网关
-  local gw4
-  gw4=$(echo "$_netinfo" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Gateway // empty' | head -n1)
-  [ -n "$gw4" ] && { echo "$gw4"; return; }
-
-  # 5) 无可用
-  echo ""
+    echo "✅ Docker 安装完成，版本信息："
+    docker --version
 }
 
 # ========== 1. 创建 macvlan 网络 ==========
@@ -1142,7 +1217,7 @@ install_mosdns() {
     fi
 }
 
-function install_adguardhome() {
+install_adguardhome() {
     echo "🔧 安装 AdGuardHome（需要选择 macvlan 网络）"
 
     # 1) 选择 macvlan（回车退出）
@@ -1222,7 +1297,7 @@ function install_adguardhome() {
     fi
 }
 
-function install_librespeed() {
+install_librespeed() {
     echo "🔧 安装 LibreSpeed（需要选择 macvlan 网络）"
 
     # 1) 选择 macvlan（回车退出）
@@ -1281,81 +1356,6 @@ function install_librespeed() {
     else
         echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
     fi
-}
-
-function calculate_ip_mac() {
-  local last_octet=$1
-  local net_name="${2:-${SELECTED_MACVLAN:-macvlan}}"
-
-  if [[ ! "$last_octet" =~ ^[0-9]+$ ]]; then
-    echo "❌ calculate_ip_mac 输入无效: $last_octet"
-    return 1
-  fi
-
-  # 1) 获取 docker 网络配置（改为可选网络名）
-  network_info=$(docker network inspect "$net_name" 2>/dev/null) || {
-    echo "❌ 无法读取网络信息：$net_name"
-    return 1
-  }
-
-  # 2) IPv4：优先 IPRange，否则 Subnet
-  local iprange subnet gateway
-  iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | (.IPRange // empty)' | head -n1)
-  subnet=$(echo  "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Subnet' | head -n1)
-  gateway=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | (.Gateway // empty)' | head -n1)
-
-  local base4
-  if [ -n "$iprange" ] && [ "$iprange" != "null" ]; then
-    base4=$(echo "$iprange" | cut -d'/' -f1)
-  else
-    base4=$(echo "$subnet" | cut -d'/' -f1)
-  fi
-  if [ -z "$base4" ] || [ "$base4" = "null" ]; then
-    echo "❌ 网络 $net_name 没有 IPv4 Subnet/IPRange"
-    return 1
-  fi
-
-  local ip="${base4%.*}.${last_octet}"
-
-  # 3) IPv6：仅当 EnableIPv6=true 且存在 IPv6 Subnet 才生成 ip6（避免 RA-only 网关坑）
-  local enable_ipv6 subnet6 gateway6 ip6_prefix ip6
-  enable_ipv6=$(echo "$network_info" | jq -r '.[0].EnableIPv6 // false')
-  subnet6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet' | head -n1)
-  gateway6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | (.Gateway // empty)' | head -n1)
-
-  ip6=""
-  if [ "$enable_ipv6" = "true" ] && [ -n "$subnet6" ] && [ "$subnet6" != "null" ]; then
-    ip6_prefix=$(echo "$subnet6" | cut -d'/' -f1)
-    local v4_3 v4_4
-    v4_3=$(echo "$ip" | cut -d'.' -f3)
-    v4_4=$(echo "$ip" | cut -d'.' -f4)
-
-    if [[ "$ip6_prefix" == *"::" ]]; then
-      ip6="${ip6_prefix}${v4_3}:${v4_4}"
-    else
-      ip6="${ip6_prefix}::${v4_3}:${v4_4}"
-    fi
-  else
-    gateway6=""
-  fi
-
-  # 4) MAC
-  local mac
-  mac=$(ip_to_mac "$ip")
-
-  # 5) 输出/回填
-  echo "Network: $net_name"
-  echo "IPv4: $ip"
-  echo "IPv6: $ip6"
-  echo "MAC: $mac"
-  echo "Gateway: $gateway"
-  echo "Gateway6: $gateway6"
-
-  calculated_ip=$ip
-  calculated_ip6=$ip6
-  calculated_mac=$mac
-  calculated_gateway=$gateway
-  calculated_gateway6=$gateway6
 }
 
 # ========== 删除 docker macvlan 网络 ==========
