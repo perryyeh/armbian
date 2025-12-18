@@ -1022,6 +1022,7 @@ install_adguardhome() {
     mkdir -p "${dockerapps}/adguardwork" "${dockerapps}" || return 1
 
     # 4) 清理旧目录（仓库 clone 目录）
+    cd "$dockerapps" || return 1
     if [ -d "${dockerapps}/adguardhome" ]; then
         echo "⚠️ 检测到 ${dockerapps}/adguardhome 已存在，正在删除..."
         rm -rf "${dockerapps}/adguardhome"
