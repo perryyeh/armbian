@@ -1642,14 +1642,18 @@ clean_macvlan_bridge() {
 }
 
 run_watchtower_once() {
-    echo "🔧 正在执行 watchtower --run-once 更新所有容器..."
+    echo "🔧 正在执行 watchtower --run-once 更新所有容器（排除 watchtower 自身）..."
     API=$(docker version --format '{{.Server.APIVersion}}')   # 预期=1.52
     docker run --rm \
         -e DOCKER_API_VERSION="$API" \
         -v /var/run/docker.sock:/var/run/docker.sock \
         containrrr/watchtower:latest \
-        --run-once
-    echo "✅ watchtower 更新完成"
+        --run-once \
+        --cleanup \
+        --rolling-restart \
+        --include-stopped \
+        --disable-containers watchtower
+    echo "✅ watchtower run-once 更新完成"
 }
 
 # =====================
