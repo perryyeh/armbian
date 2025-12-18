@@ -981,151 +981,10 @@ EOF
     fi
 }
 
-# 安装samba
-install_samba() {
-    echo "🔧 开始安装 Samba（基于 macvlan 独立 IP）"
-
-    # 0. 选择要使用的 macvlan 网络（数字选择）
-    echo "🔧 检测可用的 macvlan 网络："
-    mapfile -t macvlan_list < <(docker network ls --format '{{.Name}}' | grep '^macvlan' || true)
-
-    if [ ${#macvlan_list[@]} -eq 0 ]; then
-        echo "❌ 未检测到任何 macvlan 网络，请先创建（菜单 8）。"
-        return 1
-    fi
-
-    echo "可用网络："
-    for i in "${!macvlan_list[@]}"; do
-        idx=$((i + 1))
-        echo "  ${idx}) ${macvlan_list[$i]}"
-    done
-
-    read -p "请选择要使用的 macvlan 网络编号（默认 1）: " net_index
-    net_index=${net_index:-1}
-
-    if ! [[ "$net_index" =~ ^[0-9]+$ ]] || [ "$net_index" -lt 1 ] || [ "$net_index" -gt "${#macvlan_list[@]}" ]; then
-        echo "❌ 无效输入。"
-        return 1
-    fi
-
-    macvlan_name="${macvlan_list[$((net_index - 1))]}"
-    echo "✅ 已选择 macvlan 网络: ${macvlan_name}"
-
-    # 读取该 macvlan 网络配置
-    network_info=$(docker network inspect "$macvlan_name" 2>/dev/null)
-    if [ -z "$network_info" ] || [ "$network_info" = "[]" ]; then
-        echo "❌ 未检测到 docker 网络 $macvlan_name，请确认名称是否正确。"
-        return 1
-    fi
-
-    # ---- 解析 IPv4 subnet ----
-    subnet4=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Subnet // empty')
-
-    if [ -z "$subnet4" ] || [ "$subnet4" = "null" ]; then
-        echo "❌ 网络 $macvlan_name 未配置 IPv4 子网，无法为 Samba 分配地址。"
-        return 1
-    fi
-
-    subnet4_ip=$(echo "$subnet4" | cut -d'/' -f1)
-    subnet4_mask=$(echo "$subnet4" | cut -d'/' -f2)
-    base_v4_prefix="${subnet4_ip%.*}"   # 例如 10.86.28
-    last_octet=145
-    samba4="${base_v4_prefix}.${last_octet}"
-
-    # ---- 解析 IPv6 subnet（如有）----
-    subnet6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet // empty')
-
-    samba6=""
-    subnet6_mask=""
-    if [ -n "$subnet6" ] && [ "$subnet6" != "null" ]; then
-        subnet6_ip=$(echo "$subnet6" | cut -d'/' -f1)
-        subnet6_mask=$(echo "$subnet6" | cut -d'/' -f2)
-
-        # 用 IPv6 子网地址的前缀 + host-id 145 生成地址
-        prefix6=$(echo "$subnet6_ip" | rev | cut -d':' -f2- | rev):
-        samba6="${prefix6}${last_octet}"
-    fi
-
-    # MAC 用工具函数 ip_to_mac 由 IPv4 生成（该函数在脚本其他位置已存在）
-    sambamac=$(ip_to_mac "$samba4")
-
-    echo "📡 选用的 macvlan 网络: $macvlan_name"
-    echo "📍 规划的 Samba 地址:"
-    echo "  IPv4 : $samba4/$subnet4_mask"
-    [ -n "$samba6" ] && echo "  IPv6 : $samba6/${subnet6_mask}"
-    echo "  MAC  : $sambamac"
-
-    # 2. 收集用户参数
-    read -p "请输入 Docker 应用存储目录(例如 /data/dockerapps): " dockerapps
-    read -p "请输入要共享的实际路径(例如 /data/nvr/samba): " smb_storage
-    read -p "请输入 Samba 用户名: " smb_user
-    read -s -p "请输入 Samba 密码: " smb_pass
-    echo
-
-    appdir="${dockerapps}/samba"
-
-    # 3. 如果目录已存在，先删掉再 clone
-    if [ -d "${appdir}" ]; then
-        echo "⚠️ 检测到 ${appdir} 已存在，正在删除..."
-        rm -rf "${appdir}"
-    fi
-
-    mkdir -p "${dockerapps}"
-
-    # 4. 克隆仓库（你的仓库）
-    git clone https://github.com/perryyeh/samba.git "${appdir}"
-
-    cd "${appdir}" || return 1
-
-    # 5. 确认 docker-compose.yml 存在
-    if [ ! -f docker-compose.yml ]; then
-        echo "❌ 未找到 ${appdir}/docker-compose.yml，请确认仓库中已包含该文件"
-        return 1
-    fi
-
-    # 6. 生成 .env 文件（包含 appdir / MACVLAN_NET 等参数）
-    cat > .env <<EOF
-# 使用的 macvlan 网络名（compose 中 networks.macvlan.name 使用）
-MACVLAN_NET=${macvlan_name}
-
-# 固定 IP / MAC
-samba4=${samba4}
-samba6=${samba6}
-sambamac=${sambamac}
-
-# Samba 配置
-SMB_USER=${smb_user}
-SMB_PASS=${smb_pass}
-SMB_STORAGE=${smb_storage}
-SMB_PORT=445
-
-# 应用目录（用于挂载 smb.conf / users.conf）
-appdir=${appdir}
-EOF
-
-    echo "✅ 已生成 ${appdir}/.env："
-    cat .env
-    echo
-
-    # 7. 启动容器
-    docker compose up -d
-
-    echo "✅ Samba 容器已启动："
-    echo "  使用 macvlan 网络 : ${macvlan_name}"
-    echo "  IPv4 地址        : ${samba4}"
-    [ -n "$samba6" ] && echo "  IPv6 地址        : ${samba6}"
-    echo "  MAC 地址         : ${sambamac}"
-    echo "  用户名           : ${smb_user}"
-    echo "  密码             : ${smb_pass}"
-    echo "  宿主路径         : ${smb_storage}"
-    echo "  配置路径         : ${appdir}/smb.conf"
-    echo "  端口             : 445"
-}
-
 install_mosdns() {
-    echo "🔧 安装 mosdns（需要选择 macvlan 网络）"
+    echo "🔧 安装 mosdns（docker compose + 固定 MAC，compose 文件来自仓库）"
 
-    # 1) 选择 macvlan（回车退出）
+    # 0) 选择 macvlan（回车退出）
     select_macvlan_or_exit
     case $? in
       0) ;;
@@ -1133,7 +992,7 @@ install_mosdns() {
       *) return 1 ;;
     esac
 
-    # 2) 选择 mihomo IPv4 最后一段（回车默认 120）
+    # 1) 选择 mihomo/mosdns IPv4 最后一段（回车默认）
     read -r -p "请输入 mihomo IPv4 最后一段（1-254，回车默认 120）: " mihomo_last
     if [ -z "$mihomo_last" ]; then
         mihomo_last=120
@@ -1141,12 +1000,7 @@ install_mosdns() {
         echo "❌ 无效的 mihomo IPv4 最后一段：$mihomo_last"
         return 1
     fi
-    echo "📌 mihomo IPv4 最后一段：$mihomo_last"
 
-    calculate_ip_mac "$mihomo_last"
-    mihomo="$calculated_ip"
-
-    # 3) 选择 mosdns IPv4 最后一段（回车默认 119）
     read -r -p "请输入 mosdns IPv4 最后一段（1-254，回车默认 119）: " mosdns_last
     if [ -z "$mosdns_last" ]; then
         mosdns_last=119
@@ -1154,7 +1008,10 @@ install_mosdns() {
         echo "❌ 无效的 mosdns IPv4 最后一段：$mosdns_last"
         return 1
     fi
-    echo "📌 mosdns IPv4 最后一段：$mosdns_last"
+
+    # 2) 计算 IP（基于 SELECTED_MACVLAN）
+    calculate_ip_mac "$mihomo_last"
+    mihomo="$calculated_ip"
 
     calculate_ip_mac "$mosdns_last"
     mosdns="$calculated_ip"
@@ -1162,7 +1019,7 @@ install_mosdns() {
     mosdnsmac="$calculated_mac"
     gateway="$calculated_gateway"
 
-    # 4) 输入目录（回车退出）
+    # 3) 输入目录（回车退出）
     read -r -p "即将安装 mosdns，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
     if [ -z "$dockerapps" ]; then
         echo "✅ 已退出 mosdns 安装。"
@@ -1172,48 +1029,55 @@ install_mosdns() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 5) 清理旧目录
+    # 4) 清理旧目录（保持你原习惯：重装就清掉）
     if [ -d "${dockerapps}/mosdns" ]; then
-      echo "⚠️ 检测到 ${dockerapps}/mosdns 已存在，正在删除..."
-      rm -rf "${dockerapps}/mosdns"
+        echo "⚠️ 检测到 ${dockerapps}/mosdns 已存在，正在删除..."
+        rm -rf "${dockerapps}/mosdns"
     fi
 
-    # 6) 拉取配置并替换
+    # 5) clone 仓库（仓库内自带 docker-compose.yml）
     git clone https://github.com/perryyeh/mosdns.git || return 1
-    sed -i "s/198.18.0.2/${mihomo}/g" "${dockerapps}/mosdns/config.yaml"
-    sed -i "s/10.0.0.1/${gateway}/g" "${dockerapps}/mosdns/config.yaml"
+    cd "${dockerapps}/mosdns" || return 1
 
-    # 7) 启动容器（使用选择的 macvlan）
+    # 6) 替换 config.yaml 里上游 mihomo / gateway（保持你原逻辑）
+    if [ -f "config.yaml" ]; then
+        sed -i "s/198.18.0.2/${mihomo}/g" config.yaml
+        if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
+            sed -i "s/10.0.0.1/${gateway}/g" config.yaml
+        fi
+    else
+        echo "❌ 未找到 ${dockerapps}/mosdns/config.yaml"
+        return 1
+    fi
+
+    # 7) 写 .env（compose 读取）
+    cat > .env <<EOF
+MACVLAN_NET=${SELECTED_MACVLAN}
+mosdns4=${mosdns}
+mosdns6=${mosdns6}
+mosdnsmac=${mosdnsmac}
+EOF
+
+    echo "✅ 已生成 .env："
+    cat .env
+    echo
+
+    # 8) 启动（无 IPv6 就只用基础 compose；有 IPv6 再叠加 override）
     docker rm -f mosdns >/dev/null 2>&1 || true
 
     if [ -n "$mosdns6" ]; then
-        docker run -d \
-          --name=mosdns \
-          --hostname=mosdns \
-          --restart=always \
-          --network="$SELECTED_MACVLAN" \
-          --ip="${mosdns}" \
-          --ip6="${mosdns6}" \
-          --mac-address="${mosdnsmac}" \
-          -v "${dockerapps}/mosdns:/etc/mosdns" \
-          irinesistiana/mosdns
+        docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d
     else
-        docker run -d \
-          --name=mosdns \
-          --hostname=mosdns \
-          --restart=always \
-          --network="$SELECTED_MACVLAN" \
-          --ip="${mosdns}" \
-          --mac-address="${mosdnsmac}" \
-          -v "${dockerapps}/mosdns:/etc/mosdns" \
-          irinesistiana/mosdns
+        docker compose -f docker-compose.yml up -d
     fi
 
     echo "✅ mosdns 已启动：${mosdns}"
+    echo "  macvlan 网络: ${SELECTED_MACVLAN}"
+    echo "  MAC        : ${mosdnsmac}"
     if [ -n "$mosdns6" ]; then
-        echo "IPv6：${mosdns6}"
+        echo "  IPv6       : ${mosdns6}"
     else
-        echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
+        echo "  IPv6       : 未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
     fi
 }
 
@@ -1356,6 +1220,162 @@ install_librespeed() {
     else
         echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
     fi
+}
+
+install_portainer() {
+    read -p "即将安装watchtower，请输入存储目录(例如 /data/dockerapps): " dockerapps
+    docker run -d -p 8000:8000 -p 9443:9443 --network=host --name=portainer --restart=always \
+    -v /var/run/docker.sock:/var/run/docker.sock -v ${dockerapps}/portainer:/data portainer/portainer-ce:lts
+}
+
+install_watchtower() {
+    API=$(docker version --format '{{.Server.APIVersion}}')   # 预期=1.52
+    docker run --name=watchtower --rm \
+      -e DOCKER_API_VERSION="$API" \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      containrrr/watchtower:latest \
+      --cleanup --include-restarting --revive-stopped
+}
+
+# 安装samba
+install_samba() {
+    echo "🔧 开始安装 Samba（基于 macvlan 独立 IP）"
+
+    # 0. 选择要使用的 macvlan 网络（数字选择）
+    echo "🔧 检测可用的 macvlan 网络："
+    mapfile -t macvlan_list < <(docker network ls --format '{{.Name}}' | grep '^macvlan' || true)
+
+    if [ ${#macvlan_list[@]} -eq 0 ]; then
+        echo "❌ 未检测到任何 macvlan 网络，请先创建（菜单 8）。"
+        return 1
+    fi
+
+    echo "可用网络："
+    for i in "${!macvlan_list[@]}"; do
+        idx=$((i + 1))
+        echo "  ${idx}) ${macvlan_list[$i]}"
+    done
+
+    read -p "请选择要使用的 macvlan 网络编号（默认 1）: " net_index
+    net_index=${net_index:-1}
+
+    if ! [[ "$net_index" =~ ^[0-9]+$ ]] || [ "$net_index" -lt 1 ] || [ "$net_index" -gt "${#macvlan_list[@]}" ]; then
+        echo "❌ 无效输入。"
+        return 1
+    fi
+
+    macvlan_name="${macvlan_list[$((net_index - 1))]}"
+    echo "✅ 已选择 macvlan 网络: ${macvlan_name}"
+
+    # 读取该 macvlan 网络配置
+    network_info=$(docker network inspect "$macvlan_name" 2>/dev/null)
+    if [ -z "$network_info" ] || [ "$network_info" = "[]" ]; then
+        echo "❌ 未检测到 docker 网络 $macvlan_name，请确认名称是否正确。"
+        return 1
+    fi
+
+    # ---- 解析 IPv4 subnet ----
+    subnet4=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Subnet // empty')
+
+    if [ -z "$subnet4" ] || [ "$subnet4" = "null" ]; then
+        echo "❌ 网络 $macvlan_name 未配置 IPv4 子网，无法为 Samba 分配地址。"
+        return 1
+    fi
+
+    subnet4_ip=$(echo "$subnet4" | cut -d'/' -f1)
+    subnet4_mask=$(echo "$subnet4" | cut -d'/' -f2)
+    base_v4_prefix="${subnet4_ip%.*}"   # 例如 10.86.28
+    last_octet=145
+    samba4="${base_v4_prefix}.${last_octet}"
+
+    # ---- 解析 IPv6 subnet（如有）----
+    subnet6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet // empty')
+
+    samba6=""
+    subnet6_mask=""
+    if [ -n "$subnet6" ] && [ "$subnet6" != "null" ]; then
+        subnet6_ip=$(echo "$subnet6" | cut -d'/' -f1)
+        subnet6_mask=$(echo "$subnet6" | cut -d'/' -f2)
+
+        # 用 IPv6 子网地址的前缀 + host-id 145 生成地址
+        prefix6=$(echo "$subnet6_ip" | rev | cut -d':' -f2- | rev):
+        samba6="${prefix6}${last_octet}"
+    fi
+
+    # MAC 用工具函数 ip_to_mac 由 IPv4 生成（该函数在脚本其他位置已存在）
+    sambamac=$(ip_to_mac "$samba4")
+
+    echo "📡 选用的 macvlan 网络: $macvlan_name"
+    echo "📍 规划的 Samba 地址:"
+    echo "  IPv4 : $samba4/$subnet4_mask"
+    [ -n "$samba6" ] && echo "  IPv6 : $samba6/${subnet6_mask}"
+    echo "  MAC  : $sambamac"
+
+    # 2. 收集用户参数
+    read -p "请输入 Docker 应用存储目录(例如 /data/dockerapps): " dockerapps
+    read -p "请输入要共享的实际路径(例如 /data/nvr/samba): " smb_storage
+    read -p "请输入 Samba 用户名: " smb_user
+    read -s -p "请输入 Samba 密码: " smb_pass
+    echo
+
+    appdir="${dockerapps}/samba"
+
+    # 3. 如果目录已存在，先删掉再 clone
+    if [ -d "${appdir}" ]; then
+        echo "⚠️ 检测到 ${appdir} 已存在，正在删除..."
+        rm -rf "${appdir}"
+    fi
+
+    mkdir -p "${dockerapps}"
+
+    # 4. 克隆仓库（你的仓库）
+    git clone https://github.com/perryyeh/samba.git "${appdir}"
+
+    cd "${appdir}" || return 1
+
+    # 5. 确认 docker-compose.yml 存在
+    if [ ! -f docker-compose.yml ]; then
+        echo "❌ 未找到 ${appdir}/docker-compose.yml，请确认仓库中已包含该文件"
+        return 1
+    fi
+
+    # 6. 生成 .env 文件（包含 appdir / MACVLAN_NET 等参数）
+    cat > .env <<EOF
+# 使用的 macvlan 网络名（compose 中 networks.macvlan.name 使用）
+MACVLAN_NET=${macvlan_name}
+
+# 固定 IP / MAC
+samba4=${samba4}
+samba6=${samba6}
+sambamac=${sambamac}
+
+# Samba 配置
+SMB_USER=${smb_user}
+SMB_PASS=${smb_pass}
+SMB_STORAGE=${smb_storage}
+SMB_PORT=445
+
+# 应用目录（用于挂载 smb.conf / users.conf）
+appdir=${appdir}
+EOF
+
+    echo "✅ 已生成 ${appdir}/.env："
+    cat .env
+    echo
+
+    # 7. 启动容器
+    docker compose up -d
+
+    echo "✅ Samba 容器已启动："
+    echo "  使用 macvlan 网络 : ${macvlan_name}"
+    echo "  IPv4 地址        : ${samba4}"
+    [ -n "$samba6" ] && echo "  IPv6 地址        : ${samba6}"
+    echo "  MAC 地址         : ${sambamac}"
+    echo "  用户名           : ${smb_user}"
+    echo "  密码             : ${smb_pass}"
+    echo "  宿主路径         : ${smb_storage}"
+    echo "  配置路径         : ${appdir}/smb.conf"
+    echo "  端口             : 445"
 }
 
 # ========== 删除 docker macvlan 网络 ==========
@@ -1573,22 +1593,7 @@ clean_macvlan_bridge() {
     echo "✅ 清理完成。"
 }
 
-function install_portainer() {
-    read -p "即将安装watchtower，请输入存储目录(例如 /data/dockerapps): " dockerapps
-    docker run -d -p 8000:8000 -p 9443:9443 --network=host --name=portainer --restart=always \
-    -v /var/run/docker.sock:/var/run/docker.sock -v ${dockerapps}/portainer:/data portainer/portainer-ce:lts
-}
-
-function install_watchtower() {
-    API=$(docker version --format '{{.Server.APIVersion}}')   # 预期=1.52
-    docker run --name=watchtower --rm \
-      -e DOCKER_API_VERSION="$API" \
-      -v /var/run/docker.sock:/var/run/docker.sock \
-      containrrr/watchtower:latest \
-      --cleanup --include-restarting --revive-stopped
-}
-
-function run_watchtower_once() {
+run_watchtower_once() {
     echo "🔧 正在执行 watchtower --run-once 更新所有容器..."
     API=$(docker version --format '{{.Server.APIVersion}}')   # 预期=1.52
     docker run --rm \
