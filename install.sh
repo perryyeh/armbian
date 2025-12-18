@@ -1261,10 +1261,10 @@ install_mihomo() {
 
     # 9) 生成 .env 文件供 docker compose 使用（补充写入选中的 macvlan）
     cat > .env <<EOF
+MACVLAN_NET=${SELECTED_MACVLAN}
 mihomo4=${mihomo}
 mihomo6=${mihomo6}
 mihomomac=${mihomomac}
-MACVLAN_NET=${SELECTED_MACVLAN}
 EOF
 
     echo "✅ 已生成 .env 文件："
