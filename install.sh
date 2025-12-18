@@ -994,7 +994,7 @@ function install_mosdns() {
 
     # 1) 输入 mihomo 的 IPv4（全 IP；支持 Surge 里复制的形式；回车默认自动推算 120）
     local mihomo_ip_input mihomo
-    read -r -p "请输入 mihomo IPv4（完整IP；可粘贴 Surge 显示的内容，回车默认自动推算 120）: " mihomo_ip_input
+    read -r -p "请输入 mihomo /surge IPv4（完整IP；回车默认自动推算 120）: " mihomo_ip_input
 
     if [ -z "$mihomo_ip_input" ]; then
         # 默认：按 120 自动推算
