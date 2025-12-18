@@ -1264,7 +1264,7 @@ install_mihomo() {
 mihomo4=${mihomo}
 mihomo6=${mihomo6}
 mihomomac=${mihomomac}
-macvlan_name=${SELECTED_MACVLAN}
+MACVLAN_NET=${SELECTED_MACVLAN}
 EOF
 
     echo "✅ 已生成 .env 文件："
