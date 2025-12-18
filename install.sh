@@ -994,7 +994,6 @@ install_adguardhome() {
     calculate_ip_mac "$mosdns_last"
     local mosdns="$calculated_ip"
     local mosdns6="$calculated_ip6"
-    local gateway="$calculated_gateway"
 
     # 2) 选择 AdGuardHome IPv4 最后一段（回车默认 114）
     local adg_last
@@ -1010,6 +1009,7 @@ install_adguardhome() {
     local adguard="$calculated_ip"
     local adguard6="$calculated_ip6"
     local adguardmac="$calculated_mac"
+    local gateway="$calculated_gateway"
 
     # 3) 输入目录（回车退出）
     local dockerapps
@@ -1045,15 +1045,15 @@ EOF
 
     # 8) 如已存在 AdGuardHome.yaml，则替换上游（可选）
     if [ -f "${dockerapps}/adguardhome/AdGuardHome.yaml" ]; then
-        sed -i "s/10.0.1.119/${mosdns}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
+        sed -i "s/10.0.1.119/${mosdns}/g" "${dockerapps}/adguardhome/AdGuardHome.yaml"
         if [ -n "$mosdns6" ]; then
-            sed -i "s/fd10::1:119/${mosdns6}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
+            sed -i "s/fd10::1:119/${mosdns6}/g" "${dockerapps}/adguardhome/AdGuardHome.yaml"
         fi
         if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
-            sed -i "s/10.0.0.1/${gateway}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
+            sed -i "s/10.0.0.1/${gateway}/g" "${dockerapps}/adguardhome/AdGuardHome.yaml"
         fi
     else
-        echo "ℹ️ 未找到 conf/AdGuardHome.yaml：首次启动后可在 WebUI 配置上游 DNS（或你之后再替换）。"
+        echo "ℹ️ 未找到 AdGuardHome.yaml：首次启动后可在 WebUI 配置上游 DNS（或你之后再替换）。"
     fi
 
     echo "✅ 已生成 .env："
