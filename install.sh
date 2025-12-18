@@ -1277,12 +1277,22 @@ install_portainer() {
 }
 
 install_watchtower() {
-    API=$(docker version --format '{{.Server.APIVersion}}')   # 预期=1.52
-    docker run --name=watchtower --rm \
+    echo "🔧 安装并启动常驻 watchtower..."
+
+    API=$(docker version --format '{{.Server.APIVersion}}')
+
+    docker run -d \
+      --name watchtower \
+      --restart=always \
       -e DOCKER_API_VERSION="$API" \
+      -e TZ="Asia/Shanghai" \
       -v /var/run/docker.sock:/var/run/docker.sock \
       containrrr/watchtower:latest \
-      --cleanup --include-restarting --revive-stopped
+      --cleanup \
+      --include-restarting \
+      --revive-stopped
+
+    echo "✅ watchtower 已常驻运行"
 }
 
 # 安装samba
