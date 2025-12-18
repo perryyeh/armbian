@@ -1092,16 +1092,27 @@ install_mosdns() {
     esac
 
     # 1) 输入 mihomo 的 IPv4（全 IP；支持 Surge 里复制的形式；回车默认自动推算 120）
+    # 1) 输入 mihomo 的 IPv4：支持【完整IPv4】或【最后一段1-254】
     local mihomo_ip_input mihomo
-    read -r -p "请输入 mihomo /surge IPv4（完整IP；回车默认自动推算 120）: " mihomo_ip_input
+    read -r -p "请输入 mihomo /surge IPv4（可输完整IP；也可只输最后一段，回车默认 120；）: " mihomo_ip_input
 
+    # 回车退出（你如果不想退出，把 return 0 改成默认 120）
     if [ -z "$mihomo_ip_input" ]; then
-        # 默认：按 120 自动推算
+        # 默认 120
         calculate_ip_mac 120
         mihomo="$calculated_ip"
-        echo "📌 mihomo IPv4（默认推算）: $mihomo"
+        echo "📌 mihomo IPv4（默认推算 120）: $mihomo"
+    elif [[ "$mihomo_ip_input" =~ ^[0-9]+$ ]]; then
+        # 只输入了最后一段
+        if [ "$mihomo_ip_input" -lt 1 ] || [ "$mihomo_ip_input" -gt 254 ]; then
+            echo "❌ 无效的最后一段：$mihomo_ip_input"
+            return 1
+        fi
+        calculate_ip_mac "$mihomo_ip_input"
+        mihomo="$calculated_ip"
+        echo "📌 mihomo IPv4（按最后一段推算）: $mihomo"
     else
-        # 允许输入带端口等文本（如 10.0.1.120:7891），提取第一个 IPv4
+        # 输入了完整文本（允许带端口/Surge内容），提取第一个 IPv4
         mihomo=$(echo "$mihomo_ip_input" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)
         if [ -z "$mihomo" ]; then
             echo "❌ 未能从输入中解析出 IPv4：$mihomo_ip_input"
@@ -1109,8 +1120,7 @@ install_mosdns() {
         fi
         # 校验每段 0-255
         IFS='.' read -r o1 o2 o3 o4 <<< "$mihomo"
-        if [ -z "$o1" ] || [ -z "$o2" ] || [ -z "$o3" ] || [ -z "$o4" ] \
-          || [ "$o1" -gt 255 ] || [ "$o2" -gt 255 ] || [ "$o3" -gt 255 ] || [ "$o4" -gt 255 ]; then
+        if [ "$o1" -gt 255 ] || [ "$o2" -gt 255 ] || [ "$o3" -gt 255 ] || [ "$o4" -gt 255 ]; then
             echo "❌ IPv4 不合法：$mihomo"
             return 1
         fi
