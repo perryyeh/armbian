@@ -792,7 +792,7 @@ create_macvlan_bridge() {
     if [ -n "$mihomo_ip" ]; then
         echo "🔎 自动探测到 mihomo IP: $mihomo_ip"
     else
-        echo "ℹ️ 未探测到 mihomo IP，将跳过创建时的 198.18.0.0/15 路由写入（运行时仍可用 MIHOMO 覆盖）"
+        echo "ℹ️ 未探测到 mihomo IP，将跳过创建时的 198.18.0.0/16 路由写入（运行时仍可用 MIHOMO 覆盖）"
     fi
 
     read -p "确认创建/更新以上 bridge？(y/n): " yn
@@ -851,8 +851,8 @@ EOF
     if [ -n "$mihomo_ip" ]; then
         cat <<EOF | sudo tee -a "$setup_script" >/dev/null
 
-# mihomo 专用路由（198.18.0.0/15）——创建时写入
-ip route replace 198.18.0.0/15 via "$mihomo_ip" dev "$bridge_if" 2>/dev/null || true
+# mihomo 专用路由（198.18.0.0/16）——创建时写入
+ip route replace 198.18.0.0/16 via "$mihomo_ip" dev "$bridge_if" 2>/dev/null || true
 EOF
     fi
 
@@ -861,7 +861,7 @@ EOF
 # 运行时覆盖：若设置了 MIHOMO/mihomo，则替换 198.18/15 的下一跳
 MIHOMO_EFFECTIVE="${MIHOMO:-${mihomo:-}}"
 if [ -n "$MIHOMO_EFFECTIVE" ]; then
-  ip route replace 198.18.0.0/15 via "$MIHOMO_EFFECTIVE" dev "$bridge_if" 2>/dev/null || true
+  ip route replace 198.18.0.0/16 via "$MIHOMO_EFFECTIVE" dev "$bridge_if" 2>/dev/null || true
 fi
 EOF
 
@@ -894,8 +894,8 @@ EOF
     fi
 }
 
-install_mihomo() {
-    echo "🔧 安装 mihomo（需要选择 macvlan 网络）"
+install_librespeed() {
+    echo "🔧 安装 LibreSpeed（git clone + docker compose + 固定 MAC）"
 
     # 1) 选择 macvlan（回车退出）
     select_macvlan_or_exit
@@ -905,79 +905,178 @@ install_mihomo() {
       *) return 1 ;;
     esac
 
-    # 2) 选择 mihomo IPv4 最后一段（回车默认 120）
-    read -r -p "请输入 mihomo IPv4 最后一段（1-254，回车默认 120）: " mihomo_last
-    if [ -z "$mihomo_last" ]; then
-        mihomo_last=120
-    elif [[ ! "$mihomo_last" =~ ^[0-9]+$ ]] || [ "$mihomo_last" -lt 1 ] || [ "$mihomo_last" -gt 254 ]; then
-        echo "❌ 无效的 mihomo IPv4 最后一段：$mihomo_last"
+    # 2) 选择 IPv4 最后一段（回车默认 111）
+    read -r -p "请输入 LibreSpeed IPv4 最后一段（1-254，回车默认 111）: " last_octet
+    if [ -z "$last_octet" ]; then
+        last_octet=111
+    elif [[ ! "$last_octet" =~ ^[0-9]+$ ]] || [ "$last_octet" -lt 1 ] || [ "$last_octet" -gt 254 ]; then
+        echo "❌ 无效的 IPv4 最后一段：$last_octet"
         return 1
     fi
-    echo "📌 mihomo IPv4 最后一段：$mihomo_last"
+    echo "📌 使用 IPv4 最后一段：$last_octet"
 
-    # 3) 计算 IP / IPv6 / MAC / Gateway（基于 SELECTED_MACVLAN）
-    calculate_ip_mac "$mihomo_last"
-    mihomo=$calculated_ip
-    mihomo6=$calculated_ip6
-    mihomomac=$calculated_mac
-    gateway=$calculated_gateway
+    # 3) 计算 IP / IPv6 / MAC（基于 SELECTED_MACVLAN）
+    calculate_ip_mac "$last_octet"
+    librespeed="$calculated_ip"
+    librespeed6="$calculated_ip6"
+    librespeedmac="$calculated_mac"
 
     # 4) 输入目录（回车退出）
-    read -r -p "即将安装 mihomo，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
+    read -r -p "即将安装 LibreSpeed，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
     if [ -z "$dockerapps" ]; then
-        echo "✅ 已退出 mihomo 安装。"
+        echo "✅ 已退出 LibreSpeed 安装。"
         return 0
     fi
 
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 5) 删除旧目录
-    if [ -d "${dockerapps}/mihomo" ]; then
-      echo "⚠️ 检测到 ${dockerapps}/mihomo 已存在，正在删除..."
-      rm -rf "${dockerapps}/mihomo"
+    # 5) 清理旧目录（重装就清掉）
+    if [ -d "${dockerapps}/librespeed" ]; then
+        echo "⚠️ 检测到 ${dockerapps}/librespeed 已存在，正在删除..."
+        rm -rf "${dockerapps}/librespeed"
     fi
 
-    # 6) 拉取配置仓库
-    git clone https://github.com/perryyeh/mihomo.git || return 1
-    cd "${dockerapps}/mihomo" || return 1
+    # 6) clone 仓库（仓库内自带 docker-compose.yml）
+    git clone https://github.com/perryyeh/librespeed.git "${dockerapps}/librespeed" || return 1
+    cd "${dockerapps}/librespeed" || return 1
 
-    # 7) 替换 config.yaml 里的网关（保持你原逻辑）
-    if [ -f "config.yaml" ] && [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
-        sed -i "s/10.0.0.1/${gateway}/g" config.yaml
-    fi
-
-    # 8) 让 docker-compose 使用你选的 macvlan（如果 compose 写死 name: macvlan）
-    if [ -f "docker-compose.yml" ]; then
-        if grep -qE 'name:\s*macvlan\b' docker-compose.yml; then
-            sed -i "s/name:\\s*macvlan\\b/name: ${SELECTED_MACVLAN}/g" docker-compose.yml
-        fi
-    else
-        echo "❌ 未找到 docker-compose.yml，请确认仓库中已包含该文件"
-        return 1
-    fi
-
-    # 9) 生成 .env 文件供 docker compose 使用（补充写入选中的 macvlan）
+    # 7) 写 .env（compose 读取）
     cat > .env <<EOF
-mihomo4=${mihomo}
-mihomo6=${mihomo6}
-mihomomac=${mihomomac}
-dockerapps=${dockerapps}
-macvlan_name=${SELECTED_MACVLAN}
+MACVLAN_NET=${SELECTED_MACVLAN}
+librespeed4=${librespeed}
+librespeed6=${librespeed6}
+librespeedmac=${librespeedmac}
 EOF
 
-    echo "✅ 已生成 .env 文件："
+    echo "✅ 已生成 .env："
     cat .env
     echo
 
-    # 10) 启动容器
-    docker compose up -d
+    # 8) 启动（无 IPv6 就只用基础 compose；有 IPv6 再叠加 override）
+    docker rm -f librespeed >/dev/null 2>&1 || true
 
-    echo "✅ mihomo 已启动！访问地址：http://${mihomo}:9090/ui/  密码：admin"
-    if [ -n "$mihomo6" ]; then
-        echo "IPv6：${mihomo6}"
+    if [ -n "$librespeed6" ]; then
+        docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d
+    else
+        docker compose -f docker-compose.yml up -d
+    fi
+
+    echo "✅ LibreSpeed 已启动"
+    echo "访问地址：http://${librespeed}"
+    if [ -n "$librespeed6" ]; then
+        echo "IPv6 地址：${librespeed6}"
     else
         echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
+    fi
+}
+
+install_adguardhome() {
+    echo "🔧 安装 AdGuardHome（compose 模板来自 Git 仓库 + 固定 MAC）"
+
+    # 0) 选择 macvlan（回车退出）
+    select_macvlan_or_exit
+    case $? in
+      0) ;;
+      2) return 0 ;;
+      *) return 1 ;;
+    esac
+
+    # 1) 选择上游 mosdns（用于替换 AdGuardHome.yaml，可选）
+    local mosdns_last
+    read -r -p "请输入 mosdns IPv4 最后一段（1-254，回车默认 119）: " mosdns_last
+    if [ -z "$mosdns_last" ]; then
+        mosdns_last=119
+    elif [[ ! "$mosdns_last" =~ ^[0-9]+$ ]] || [ "$mosdns_last" -lt 1 ] || [ "$mosdns_last" -gt 254 ]; then
+        echo "❌ 无效的 mosdns IPv4 最后一段：$mosdns_last"
+        return 1
+    fi
+    calculate_ip_mac "$mosdns_last"
+    local mosdns="$calculated_ip"
+    local mosdns6="$calculated_ip6"
+    local gateway="$calculated_gateway"
+
+    # 2) 选择 AdGuardHome IPv4 最后一段（回车默认 114）
+    local adg_last
+    read -r -p "请输入 AdGuardHome IPv4 最后一段（1-254，回车默认 114）: " adg_last
+    if [ -z "$adg_last" ]; then
+        adg_last=114
+    elif [[ ! "$adg_last" =~ ^[0-9]+$ ]] || [ "$adg_last" -lt 1 ] || [ "$adg_last" -gt 254 ]; then
+        echo "❌ 无效的 AdGuardHome IPv4 最后一段：$adg_last"
+        return 1
+    fi
+
+    calculate_ip_mac "$adg_last"
+    local adguard="$calculated_ip"
+    local adguard6="$calculated_ip6"
+    local adguardmac="$calculated_mac"
+
+    # 3) 输入目录（回车退出）
+    local dockerapps
+    read -r -p "即将安装 AdGuardHome，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
+    if [ -z "$dockerapps" ]; then
+        echo "✅ 已退出 AdGuardHome 安装。"
+        return 0
+    fi
+
+    mkdir -p "${dockerapps}/adguardwork" "${dockerapps}" || return 1
+
+    # 4) 清理旧目录（仓库 clone 目录）
+    if [ -d "${dockerapps}/adguardhome" ]; then
+        echo "⚠️ 检测到 ${dockerapps}/adguardhome 已存在，正在删除..."
+        rm -rf "${dockerapps}/adguardhome"
+    fi
+
+    # 5) clone 仓库（仓库内自带 docker-compose.yml）
+    git clone https://github.com/perryyeh/adguardhome.git "${dockerapps}/adguardhome" || return 1
+    cd "${dockerapps}/adguardhome" || return 1
+
+    # 6) 写 .env（compose 读取）
+    cat > .env <<EOF
+MACVLAN_NET=${SELECTED_MACVLAN}
+adguard4=${adguard}
+adguard6=${adguard6}
+adguardmac=${adguardmac}
+workdir=${dockerapps}/adguardwork
+confdir=${dockerapps}/adguardhome
+EOF
+
+    # 7) 确保 conf 目录存在（给 AdGuardHome 持久化）
+
+    # 8) 如已存在 AdGuardHome.yaml，则替换上游（可选）
+    if [ -f "${dockerapps}/adguardhome/AdGuardHome.yaml" ]; then
+        sed -i "s/10.0.1.119/${mosdns}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
+        if [ -n "$mosdns6" ]; then
+            sed -i "s/fd10::1:119/${mosdns6}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
+        fi
+        if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
+            sed -i "s/10.0.0.1/${gateway}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
+        fi
+    else
+        echo "ℹ️ 未找到 conf/AdGuardHome.yaml：首次启动后可在 WebUI 配置上游 DNS（或你之后再替换）。"
+    fi
+
+    echo "✅ 已生成 .env："
+    cat .env
+    echo
+
+    # 9) 启动（无 IPv6 就只用基础 compose；有 IPv6 再叠加 override）
+    docker rm -f adguardhome >/dev/null 2>&1 || true
+
+    if [ -n "$adguard6" ]; then
+        docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d
+    else
+        docker compose -f docker-compose.yml up -d
+    fi
+
+    echo "✅ AdGuardHome 已启动：${adguard}"
+    echo "  macvlan 网络: ${SELECTED_MACVLAN}"
+    echo "  MAC        : ${adguardmac}"
+    echo "  上游 mosdns : ${mosdns}"
+    if [ -n "$adguard6" ]; then
+        echo "  IPv6       : ${adguard6}"
+    else
+        echo "  IPv6       : 未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
     fi
 }
 
@@ -1100,117 +1199,8 @@ EOF
     fi
 }
 
-install_adguardhome() {
-    echo "🔧 安装 AdGuardHome（compose 模板来自 Git 仓库 + 固定 MAC）"
-
-    # 0) 选择 macvlan（回车退出）
-    select_macvlan_or_exit
-    case $? in
-      0) ;;
-      2) return 0 ;;
-      *) return 1 ;;
-    esac
-
-    # 1) 选择上游 mosdns（用于替换 AdGuardHome.yaml，可选）
-    local mosdns_last
-    read -r -p "请输入 mosdns IPv4 最后一段（1-254，回车默认 119）: " mosdns_last
-    if [ -z "$mosdns_last" ]; then
-        mosdns_last=119
-    elif [[ ! "$mosdns_last" =~ ^[0-9]+$ ]] || [ "$mosdns_last" -lt 1 ] || [ "$mosdns_last" -gt 254 ]; then
-        echo "❌ 无效的 mosdns IPv4 最后一段：$mosdns_last"
-        return 1
-    fi
-    calculate_ip_mac "$mosdns_last"
-    local mosdns="$calculated_ip"
-    local mosdns6="$calculated_ip6"
-    local gateway="$calculated_gateway"
-
-    # 2) 选择 AdGuardHome IPv4 最后一段（回车默认 114）
-    local adg_last
-    read -r -p "请输入 AdGuardHome IPv4 最后一段（1-254，回车默认 114）: " adg_last
-    if [ -z "$adg_last" ]; then
-        adg_last=114
-    elif [[ ! "$adg_last" =~ ^[0-9]+$ ]] || [ "$adg_last" -lt 1 ] || [ "$adg_last" -gt 254 ]; then
-        echo "❌ 无效的 AdGuardHome IPv4 最后一段：$adg_last"
-        return 1
-    fi
-
-    calculate_ip_mac "$adg_last"
-    local adguard="$calculated_ip"
-    local adguard6="$calculated_ip6"
-    local adguardmac="$calculated_mac"
-
-    # 3) 输入目录（回车退出）
-    local dockerapps
-    read -r -p "即将安装 AdGuardHome，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
-    if [ -z "$dockerapps" ]; then
-        echo "✅ 已退出 AdGuardHome 安装。"
-        return 0
-    fi
-
-    mkdir -p "${dockerapps}/adguardwork" "${dockerapps}" || return 1
-
-    # 4) 清理旧目录（仓库 clone 目录）
-    if [ -d "${dockerapps}/adguardhome" ]; then
-        echo "⚠️ 检测到 ${dockerapps}/adguardhome 已存在，正在删除..."
-        rm -rf "${dockerapps}/adguardhome"
-    fi
-
-    # 5) clone 仓库（仓库内自带 docker-compose.yml）
-    git clone https://github.com/perryyeh/adguardhome.git "${dockerapps}/adguardhome" || return 1
-    cd "${dockerapps}/adguardhome" || return 1
-
-    # 6) 写 .env（compose 读取）
-    cat > .env <<EOF
-MACVLAN_NET=${SELECTED_MACVLAN}
-adguard4=${adguard}
-adguard6=${adguard6}
-adguardmac=${adguardmac}
-workdir=${dockerapps}/adguardwork
-confdir=${dockerapps}/adguardhome
-EOF
-
-    # 7) 确保 conf 目录存在（给 AdGuardHome 持久化）
-
-    # 8) 如已存在 AdGuardHome.yaml，则替换上游（可选）
-    if [ -f "${dockerapps}/adguardhome/AdGuardHome.yaml" ]; then
-        sed -i "s/10.0.1.119/${mosdns}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
-        if [ -n "$mosdns6" ]; then
-            sed -i "s/fd10:00:00::1:119/${mosdns6}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
-        fi
-        if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
-            sed -i "s/10.0.0.1/${gateway}/g" "${dockerapps}/adguardhome/conf/AdGuardHome.yaml"
-        fi
-    else
-        echo "ℹ️ 未找到 conf/AdGuardHome.yaml：首次启动后可在 WebUI 配置上游 DNS（或你之后再替换）。"
-    fi
-
-    echo "✅ 已生成 .env："
-    cat .env
-    echo
-
-    # 9) 启动（无 IPv6 就只用基础 compose；有 IPv6 再叠加 override）
-    docker rm -f adguardhome >/dev/null 2>&1 || true
-
-    if [ -n "$adguard6" ]; then
-        docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d
-    else
-        docker compose -f docker-compose.yml up -d
-    fi
-
-    echo "✅ AdGuardHome 已启动：${adguard}"
-    echo "  macvlan 网络: ${SELECTED_MACVLAN}"
-    echo "  MAC        : ${adguardmac}"
-    echo "  上游 mosdns : ${mosdns}"
-    if [ -n "$adguard6" ]; then
-        echo "  IPv6       : ${adguard6}"
-    else
-        echo "  IPv6       : 未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
-    fi
-}
-
-install_librespeed() {
-    echo "🔧 安装 LibreSpeed（git clone + docker compose + 固定 MAC）"
+install_mihomo() {
+    echo "🔧 安装 mihomo（需要选择 macvlan 网络）"
 
     # 1) 选择 macvlan（回车退出）
     select_macvlan_or_exit
@@ -1220,67 +1210,77 @@ install_librespeed() {
       *) return 1 ;;
     esac
 
-    # 2) 选择 IPv4 最后一段（回车默认 111）
-    read -r -p "请输入 LibreSpeed IPv4 最后一段（1-254，回车默认 111）: " last_octet
-    if [ -z "$last_octet" ]; then
-        last_octet=111
-    elif [[ ! "$last_octet" =~ ^[0-9]+$ ]] || [ "$last_octet" -lt 1 ] || [ "$last_octet" -gt 254 ]; then
-        echo "❌ 无效的 IPv4 最后一段：$last_octet"
+    # 2) 选择 mihomo IPv4 最后一段（回车默认 120）
+    read -r -p "请输入 mihomo IPv4 最后一段（1-254，回车默认 120）: " mihomo_last
+    if [ -z "$mihomo_last" ]; then
+        mihomo_last=120
+    elif [[ ! "$mihomo_last" =~ ^[0-9]+$ ]] || [ "$mihomo_last" -lt 1 ] || [ "$mihomo_last" -gt 254 ]; then
+        echo "❌ 无效的 mihomo IPv4 最后一段：$mihomo_last"
         return 1
     fi
-    echo "📌 使用 IPv4 最后一段：$last_octet"
+    echo "📌 mihomo IPv4 最后一段：$mihomo_last"
 
-    # 3) 计算 IP / IPv6 / MAC（基于 SELECTED_MACVLAN）
-    calculate_ip_mac "$last_octet"
-    librespeed="$calculated_ip"
-    librespeed6="$calculated_ip6"
-    librespeedmac="$calculated_mac"
+    # 3) 计算 IP / IPv6 / MAC / Gateway（基于 SELECTED_MACVLAN）
+    calculate_ip_mac "$mihomo_last"
+    mihomo=$calculated_ip
+    mihomo6=$calculated_ip6
+    mihomomac=$calculated_mac
+    gateway=$calculated_gateway
 
     # 4) 输入目录（回车退出）
-    read -r -p "即将安装 LibreSpeed，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
+    read -r -p "即将安装 mihomo，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
     if [ -z "$dockerapps" ]; then
-        echo "✅ 已退出 LibreSpeed 安装。"
+        echo "✅ 已退出 mihomo 安装。"
         return 0
     fi
 
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 5) 清理旧目录（重装就清掉）
-    if [ -d "${dockerapps}/librespeed" ]; then
-        echo "⚠️ 检测到 ${dockerapps}/librespeed 已存在，正在删除..."
-        rm -rf "${dockerapps}/librespeed"
+    # 5) 删除旧目录
+    if [ -d "${dockerapps}/mihomo" ]; then
+      echo "⚠️ 检测到 ${dockerapps}/mihomo 已存在，正在删除..."
+      rm -rf "${dockerapps}/mihomo"
     fi
 
-    # 6) clone 仓库（仓库内自带 docker-compose.yml）
-    git clone https://github.com/perryyeh/librespeed.git "${dockerapps}/librespeed" || return 1
-    cd "${dockerapps}/librespeed" || return 1
+    # 6) 拉取配置仓库
+    git clone https://github.com/perryyeh/mihomo.git || return 1
+    cd "${dockerapps}/mihomo" || return 1
 
-    # 7) 写 .env（compose 读取）
+    # 7) 替换 config.yaml 里的网关（保持你原逻辑）
+    if [ -f "config.yaml" ] && [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
+        sed -i "s/10.0.0.1/${gateway}/g" config.yaml
+    fi
+
+    # 8) 让 docker-compose 使用你选的 macvlan（如果 compose 写死 name: macvlan）
+    if [ -f "docker-compose.yml" ]; then
+        if grep -qE 'name:\s*macvlan\b' docker-compose.yml; then
+            sed -i "s/name:\\s*macvlan\\b/name: ${SELECTED_MACVLAN}/g" docker-compose.yml
+        fi
+    else
+        echo "❌ 未找到 docker-compose.yml，请确认仓库中已包含该文件"
+        return 1
+    fi
+
+    # 9) 生成 .env 文件供 docker compose 使用（补充写入选中的 macvlan）
     cat > .env <<EOF
-MACVLAN_NET=${SELECTED_MACVLAN}
-librespeed4=${librespeed}
-librespeed6=${librespeed6}
-librespeedmac=${librespeedmac}
+mihomo4=${mihomo}
+mihomo6=${mihomo6}
+mihomomac=${mihomomac}
+dockerapps=${dockerapps}
+macvlan_name=${SELECTED_MACVLAN}
 EOF
 
-    echo "✅ 已生成 .env："
+    echo "✅ 已生成 .env 文件："
     cat .env
     echo
 
-    # 8) 启动（无 IPv6 就只用基础 compose；有 IPv6 再叠加 override）
-    docker rm -f librespeed >/dev/null 2>&1 || true
+    # 10) 启动容器
+    docker compose up -d
 
-    if [ -n "$librespeed6" ]; then
-        docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d
-    else
-        docker compose -f docker-compose.yml up -d
-    fi
-
-    echo "✅ LibreSpeed 已启动"
-    echo "访问地址：http://${librespeed}"
-    if [ -n "$librespeed6" ]; then
-        echo "IPv6 地址：${librespeed6}"
+    echo "✅ mihomo 已启动！访问地址：http://${mihomo}:9090/ui/  密码：admin"
+    if [ -n "$mihomo6" ]; then
+        echo "IPv6：${mihomo6}"
     else
         echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
     fi
@@ -1290,25 +1290,6 @@ install_portainer() {
     read -p "即将安装watchtower，请输入存储目录(例如 /data/dockerapps): " dockerapps
     docker run -d -p 8000:8000 -p 9443:9443 --network=host --name=portainer --restart=always \
     -v /var/run/docker.sock:/var/run/docker.sock -v ${dockerapps}/portainer:/data portainer/portainer-ce:lts
-}
-
-install_watchtower() {
-    echo "🔧 安装并启动常驻 watchtower..."
-
-    API=$(docker version --format '{{.Server.APIVersion}}')
-
-    docker run -d \
-      --name watchtower \
-      --restart=always \
-      -e DOCKER_API_VERSION="$API" \
-      -e TZ="Asia/Shanghai" \
-      -v /var/run/docker.sock:/var/run/docker.sock \
-      containrrr/watchtower:latest \
-      --cleanup \
-      --include-restarting \
-      --revive-stopped
-
-    echo "✅ watchtower 已常驻运行"
 }
 
 # 安装samba
@@ -1665,6 +1646,25 @@ clean_macvlan_bridge() {
 
     systemctl daemon-reload
     echo "✅ 清理完成。"
+}
+
+install_watchtower() {
+    echo "🔧 安装并启动常驻 watchtower..."
+
+    API=$(docker version --format '{{.Server.APIVersion}}')
+
+    docker run -d \
+      --name watchtower \
+      --restart=always \
+      -e DOCKER_API_VERSION="$API" \
+      -e TZ="Asia/Shanghai" \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      containrrr/watchtower:latest \
+      --cleanup \
+      --include-restarting \
+      --revive-stopped
+
+    echo "✅ watchtower 已常驻运行"
 }
 
 run_watchtower_once() {
