@@ -1100,7 +1100,7 @@ EOF
     fi
 }
 
-function install_adguardhome() {
+install_adguardhome() {
     echo "🔧 安装 AdGuardHome（compose 模板来自 Git 仓库 + 固定 MAC）"
 
     # 0) 选择 macvlan（回车退出）
@@ -1210,7 +1210,7 @@ EOF
 }
 
 install_librespeed() {
-    echo "🔧 安装 LibreSpeed（需要选择 macvlan 网络）"
+    echo "🔧 安装 LibreSpeed（git clone + docker compose + 固定 MAC）"
 
     # 1) 选择 macvlan（回车退出）
     select_macvlan_or_exit
@@ -1228,43 +1228,59 @@ install_librespeed() {
         echo "❌ 无效的 IPv4 最后一段：$last_octet"
         return 1
     fi
-
     echo "📌 使用 IPv4 最后一段：$last_octet"
 
     # 3) 计算 IP / IPv6 / MAC（基于 SELECTED_MACVLAN）
     calculate_ip_mac "$last_octet"
-    librespeed=$calculated_ip
-    librespeed6=$calculated_ip6
-    librespeedmac=$calculated_mac
+    librespeed="$calculated_ip"
+    librespeed6="$calculated_ip6"
+    librespeedmac="$calculated_mac"
 
-    # 4) 重建容器
+    # 4) 输入目录（回车退出）
+    read -r -p "即将安装 LibreSpeed，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
+    if [ -z "$dockerapps" ]; then
+        echo "✅ 已退出 LibreSpeed 安装。"
+        return 0
+    fi
+
+    mkdir -p "$dockerapps" || return 1
+    cd "$dockerapps" || return 1
+
+    # 5) 清理旧目录（重装就清掉）
+    if [ -d "${dockerapps}/librespeed" ]; then
+        echo "⚠️ 检测到 ${dockerapps}/librespeed 已存在，正在删除..."
+        rm -rf "${dockerapps}/librespeed"
+    fi
+
+    # 6) clone 仓库（仓库内自带 docker-compose.yml）
+    git clone https://github.com/perryyeh/librespeed.git "${dockerapps}/librespeed" || return 1
+    cd "${dockerapps}/librespeed" || return 1
+
+    # 7) 写 .env（compose 读取）
+    cat > .env <<EOF
+MACVLAN_NET=${SELECTED_MACVLAN}
+librespeed4=${librespeed}
+librespeed6=${librespeed6}
+librespeedmac=${librespeedmac}
+EOF
+
+    echo "✅ 已生成 .env："
+    cat .env
+    echo
+
+    # 8) 启动（无 IPv6 就只用基础 compose；有 IPv6 再叠加 override）
     docker rm -f librespeed >/dev/null 2>&1 || true
 
     if [ -n "$librespeed6" ]; then
-        docker run -d \
-            --name=librespeed \
-            --hostname=librespeed \
-            --restart=always \
-            --network="$SELECTED_MACVLAN" \
-            --ip="$librespeed" \
-            --ip6="$librespeed6" \
-            --mac-address="$librespeedmac" \
-            linuxserver/librespeed:latest
+        docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d
     else
-        docker run -d \
-            --name=librespeed \
-            --hostname=librespeed \
-            --restart=always \
-            --network="$SELECTED_MACVLAN" \
-            --ip="$librespeed" \
-            --mac-address="$librespeedmac" \
-            linuxserver/librespeed:latest
+        docker compose -f docker-compose.yml up -d
     fi
 
     echo "✅ LibreSpeed 已启动"
-    echo "访问地址：http://$librespeed"
+    echo "访问地址：http://${librespeed}"
     if [ -n "$librespeed6" ]; then
-        echo "IPv6 地址：$librespeed6"
+        echo "IPv6 地址：${librespeed6}"
     else
         echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
     fi
