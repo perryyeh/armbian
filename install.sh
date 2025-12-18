@@ -1066,16 +1066,107 @@ function install_adguardhome() {
 
 
 function install_librespeed() {
-    calculate_ip_mac 111
-    librespeed=$calculated_ip
-    librespeed6=$calculated_ip6
-    librespeedmac=$calculated_mac
+    echo "🔧 开始安装 LibreSpeed（请选择要使用的 macvlan 网络）"
 
-    docker run -d --name=librespeed --hostname=librespeed --restart=always --network=macvlan \
-    --ip=${librespeed} --ip6=${librespeed6} --mac-address=${librespeedmac} \
-    linuxserver/librespeed:latest
+    # 1) 列出所有 macvlan 网络
+    mapfile -t macvlan_networks < <(docker network ls --format '{{.Name}}' | grep '^macvlan' || true)
+    if [ ${#macvlan_networks[@]} -eq 0 ]; then
+        echo "❌ 未发现任何以 macvlan 开头的 Docker 网络，请先创建 macvlan 网络。"
+        return 1
+    fi
 
-    echo "librespeed 访问地址：http://$librespeed"
+    echo "可用的 macvlan 网络："
+    for i in "${!macvlan_networks[@]}"; do
+        echo "  $i) ${macvlan_networks[$i]}"
+    done
+
+    # 2) 选择 macvlan（回车退出）
+    read -r -p "请输入要用于 LibreSpeed 的 macvlan 序号（回车退出安装）: " choice
+    if [ -z "$choice" ]; then
+        echo "✅ 已退出 LibreSpeed 安装。"
+        return 0
+    fi
+    if [[ ! "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 0 ] || [ "$choice" -ge "${#macvlan_networks[@]}" ]; then
+        echo "❌ 无效的序号：$choice"
+        return 1
+    fi
+    local selected_macvlan="${macvlan_networks[$choice]}"
+    echo "📡 选中的 macvlan 网络: $selected_macvlan"
+
+    # 3) 基于所选 macvlan 网络计算 IP/MAC（沿用你原先的 111 号位逻辑）
+    local last_octet=111
+    local network_info iprange iprange6 iprangev4 ipv6_prefix
+    local librespeed librespeed6 librespeedmac
+    local enable_ipv6
+
+    network_info=$(docker network inspect "$selected_macvlan" 2>/dev/null) || {
+        echo "❌ 无法读取网络信息：$selected_macvlan"
+        return 1
+    }
+
+    # IPv4：优先用 IPRange，没填就回退 Subnet
+    iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | (.IPRange // empty)')
+    if [ -z "$iprange" ] || [ "$iprange" = "null" ]; then
+        iprange=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Subnet' | head -n1)
+    fi
+    if [ -z "$iprange" ] || [ "$iprange" = "null" ]; then
+        echo "❌ 所选网络没有 IPv4 Subnet/IPRange，无法分配 IPv4 地址。"
+        return 1
+    fi
+
+    iprangev4=$(echo "$iprange" | cut -d'/' -f1)
+    librespeed="${iprangev4%.*}.$last_octet"
+    librespeedmac=$(ip_to_mac "$librespeed")
+
+    # IPv6：只有网络 EnableIPv6=true 且存在 IPv6 Subnet 才给 --ip6
+    enable_ipv6=$(echo "$network_info" | jq -r '.[0].EnableIPv6 // false')
+    iprange6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet' | head -n1)
+
+    librespeed6=""
+    if [ "$enable_ipv6" = "true" ] && [ -n "$iprange6" ] && [ "$iprange6" != "null" ]; then
+        ipv6_prefix=$(echo "$iprange6" | cut -d'/' -f1)
+        local ipv4_third ipv4_fourth
+        ipv4_third=$(echo "$librespeed" | cut -d'.' -f3)
+        ipv4_fourth=$(echo "$librespeed" | cut -d'.' -f4)
+
+        if [[ "$ipv6_prefix" == *"::" ]]; then
+            librespeed6="${ipv6_prefix}${ipv4_third}:${ipv4_fourth}"
+        else
+            librespeed6="${ipv6_prefix}::${ipv4_third}:${ipv4_fourth}"
+        fi
+    fi
+
+    # 4) 安装/重建容器
+    docker rm -f librespeed >/dev/null 2>&1 || true
+
+    if [ -n "$librespeed6" ]; then
+        docker run -d \
+            --name=librespeed \
+            --hostname=librespeed \
+            --restart=always \
+            --network="$selected_macvlan" \
+            --ip="$librespeed" \
+            --ip6="$librespeed6" \
+            --mac-address="$librespeedmac" \
+            linuxserver/librespeed:latest
+    else
+        docker run -d \
+            --name=librespeed \
+            --hostname=librespeed \
+            --restart=always \
+            --network="$selected_macvlan" \
+            --ip="$librespeed" \
+            --mac-address="$librespeedmac" \
+            linuxserver/librespeed:latest
+    fi
+
+    echo "✅ LibreSpeed 已启动"
+    echo "访问地址：http://$librespeed"
+    if [ -n "$librespeed6" ]; then
+        echo "IPv6 地址：$librespeed6"
+    else
+        echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
+    fi
 }
 
 function calculate_ip_mac() {
