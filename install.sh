@@ -1244,7 +1244,7 @@ install_mihomo() {
     git clone https://github.com/perryyeh/mihomo.git || return 1
     cd "${dockerapps}/mihomo" || return 1
 
-    # 7) 替换 config.yaml 里的网关（保持你原逻辑）
+    # 7) 替换 config.yaml 里的网关
     if [ -f "config.yaml" ] && [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
         sed -i "s/10.0.0.1/${gateway}/g" config.yaml
     fi
@@ -1264,7 +1264,6 @@ install_mihomo() {
 mihomo4=${mihomo}
 mihomo6=${mihomo6}
 mihomomac=${mihomomac}
-dockerapps=${dockerapps}
 macvlan_name=${SELECTED_MACVLAN}
 EOF
 
