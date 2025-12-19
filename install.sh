@@ -1808,10 +1808,15 @@ EOF
 # =====================
 optimize_docker_logs() {
     # 前置校验
-    if [ -z "$BASH_VERSION" ]; then exec /usr/bin/env bash "$0" "$@"; fi
-    if [ "$EUID" -ne 0 ]; then echo "请以 root 权限运行（sudo bash $0）"; return 1; fi
+    if [ -z "${BASH_VERSION:-}" ]; then exec /usr/bin/env bash "$0" "$@"; fi
+    if [ "${EUID:-$(id -u)}" -ne 0 ]; then echo "请以 root 权限运行（sudo bash $0）"; return 1; fi
     if ! command -v docker >/dev/null 2>&1; then
-        echo "未检测到 Docker，请先安装 Docker。"; return 1
+        echo "未检测到 Docker，请先安装 Docker。"
+        return 1
+    fi
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "未检测到 systemctl，无法重启 docker 服务。"
+        return 1
     fi
 
     local DAEMON_JSON="/etc/docker/daemon.json"
@@ -1826,17 +1831,37 @@ optimize_docker_logs() {
         echo "🧩 已备份 $DAEMON_JSON 为 ${DAEMON_JSON}.bak-${BACKUP_SUFFIX}"
     fi
 
+    # 写入/合并配置：只保证 json-file + 轮转参数，不破坏 data-root 和其它键
     if command -v jq >/dev/null 2>&1; then
-        # 用 jq 安全合并（保留其它键与 data-root，不覆盖非日志配置）
-        if [[ -s "$DAEMON_JSON" ]]; then
-            # 文件存在且非空 → 合并
-            if jq '.' "$DAEMON_JSON" >/dev/null 2>&1; then
-                jq '
-                  .["log-driver"] = "json-file"
-                  | .["log-opts"] = {"max-size":"20m","max-file":"3"}
-                ' "$DAEMON_JSON" > "$TMP"
+        if [[ -s "$DAEMON_JSON" ]] && jq '.' "$DAEMON_JSON" >/dev/null 2>&1; then
+            # 文件存在且 JSON 正常 → 合并（保留其它键与现有 log-opts 其它字段）
+            jq '
+              .["log-driver"] = "json-file"
+              | .["log-opts"] = (.["log-opts"] // {})
+              | .["log-opts"]["max-size"] = "20m"
+              | .["log-opts"]["max-file"] = "3"
+            ' "$DAEMON_JSON" > "$TMP"
+        else
+            # 文件不存在/空/损坏 → 重写（尽力保留 data-root）
+            local CURRENT_ROOT=""
+            if [[ -s "$DAEMON_JSON" ]]; then
+                CURRENT_ROOT="$(sed -n 's/.*"data-root"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DAEMON_JSON" | head -n1)"
+            fi
+            if [[ -z "$CURRENT_ROOT" ]]; then
+                CURRENT_ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+            fi
+            if [[ -n "$CURRENT_ROOT" ]]; then
+                cat > "$TMP" <<EOF
+{
+  "data-root": "$CURRENT_ROOT",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "20m",
+    "max-file": "3"
+  }
+}
+EOF
             else
-                # 文件存在但 JSON 语法损坏 → 重写，只写日志配置
                 cat > "$TMP" <<EOF
 {
   "log-driver": "json-file",
@@ -1847,27 +1872,14 @@ optimize_docker_logs() {
 }
 EOF
             fi
-        else
-            # 文件不存在或空 → 创建只含日志配置
-            cat > "$TMP" <<EOF
-{
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "20m",
-    "max-file": "3"
-  }
-}
-EOF
         fi
         mv -f "$TMP" "$DAEMON_JSON"
     else
         # 没有 jq：尽力保留现有 data-root，再重写日志配置
         local CURRENT_ROOT=""
-        # 先从 daemon.json 提取
         if [[ -f "$DAEMON_JSON" ]]; then
-            CURRENT_ROOT="$(sed -n 's/.*"data-root"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' "$DAEMON_JSON" | head -n1)"
+            CURRENT_ROOT="$(sed -n 's/.*"data-root"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DAEMON_JSON" | head -n1)"
         fi
-        # sed 没取到就从 docker info 兜底（不一定可靠，但尽量保留）
         if [[ -z "$CURRENT_ROOT" ]]; then
             CURRENT_ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
         fi
@@ -1897,13 +1909,20 @@ EOF
     fi
 
     # 使配置生效
-    systemctl daemon-reload
-    systemctl restart docker
+    systemctl restart docker || { echo "❌ docker 重启失败，请查看：journalctl -u docker --no-pager -n 200"; return 1; }
 
-    # 回显确认：不应改变 data-root
-    local ROOT_DIR
-    ROOT_DIR=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
-    echo "✅ Docker 日志轮转已启用（20m x 3），当前 data-root：${ROOT_DIR:-未知}"
+    # 回显确认
+    local ROOT_DIR LOG_DRIVER
+    ROOT_DIR="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+    LOG_DRIVER="$(docker info --format '{{.LoggingDriver}}' 2>/dev/null || true)"
+    echo "✅ Docker 日志轮转已启用（20m x 3），RootDir：${ROOT_DIR:-未知}，LogDriver：${LOG_DRIVER:-未知}"
+
+    # 提示：Docker 轮转不等于 gzip 压缩（避免误判）
+    local CID
+    CID="$(docker ps -q 2>/dev/null | head -n1 || true)"
+    if [[ -n "$CID" && -n "$ROOT_DIR" ]]; then
+        echo "🔎 示例容器日志路径：$ROOT_DIR/containers/$CID/$CID-json.log（Docker 只轮转 .log/.log.1，不会自动生成 .gz）"
+    fi
 }
 
 # ========== 主循环 ==========
