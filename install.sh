@@ -396,11 +396,11 @@ compose_validate_and_up() {
   local workdir="$1"; shift
   local svc="$1"; shift
 
-  local force=0
+  local force=1
   local -a files=()
   while [ $# -gt 0 ]; do
-    if [ "$1" = "--force-recreate" ]; then
-      force=1
+    if [ "$1" = "--no-force-recreate" ]; then
+      force=0
       shift
       break
     fi
