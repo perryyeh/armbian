@@ -225,6 +225,16 @@ calculate_ip_mac() {
   calculated_gateway6=$gateway6
 }
 
+get_ipv4_prefix_from_macvlan() {
+    local net="$1"
+    docker network inspect "$net" 2>/dev/null \
+      | jq -r '.[0].IPAM.Config[]
+        | select(.Subnet | test(":") | not)
+        | .Subnet' \
+      | head -n1 \
+      | sed 's#/.*##; s/\.[0-9]*$##'
+}
+
 # ---- 自动探测 mihomo 下一跳 IP（返回一个 IPv4 或空串）----
 # 参数1: route4_cidr（如 10.86.21.0/24 或 /23）
 # 参数2: network_info（docker network inspect 的 JSON 字符串）
