@@ -1297,7 +1297,7 @@ install_adguardhome() {
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
     # 5) 写 .env（保持你原字段）
-    write_env_file "$WORK_DIR" \
+    write_env_file "$WORK_DIR/.env" \
       "MACVLAN_NET=${SELECTED_MACVLAN}" \
       "adguard4=${adguard}" \
       "adguard6=${adguard6}" \
