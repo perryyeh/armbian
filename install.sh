@@ -519,7 +519,7 @@ prompt_ipv4_last_octet() {
     return 1
   fi
 
-  echo "$v"
+  echo "📌 使用 IPv4 最后一段：$v"
 }
 
 # ========== 功能函数 ==========
@@ -1186,14 +1186,9 @@ install_librespeed() {
     esac
 
     # 2) 选择 IPv4 最后一段（回车默认 111）
-    read -r -p "请输入 LibreSpeed IPv4 最后一段（1-254，回车默认 111）: " last_octet
-    if [ -z "$last_octet" ]; then
-        last_octet=111
-    elif [[ ! "$last_octet" =~ ^[0-9]+$ ]] || [ "$last_octet" -lt 1 ] || [ "$last_octet" -gt 254 ]; then
-        echo "❌ 无效的 IPv4 最后一段：$last_octet"
-        return 1
-    fi
-    echo "📌 使用 IPv4 最后一段：$last_octet"
+    local last_octet
+    last_octet="$(prompt_ipv4_last_octet \
+      "请输入 LibreSpeed IPv4 最后一段（1-254，回车默认 111）: " 111)" || return 1
 
     # 3) 计算 IP / IPv6 / MAC（基于 SELECTED_MACVLAN）
     calculate_ip_mac "$last_octet"
@@ -1504,14 +1499,9 @@ install_mihomo() {
     esac
 
     # 2) 选择 mihomo IPv4 最后一段（回车默认 120）
-    read -r -p "请输入 mihomo IPv4 最后一段（1-254，回车默认 120）: " mihomo_last
-    if [ -z "$mihomo_last" ]; then
-        mihomo_last=120
-    elif [[ ! "$mihomo_last" =~ ^[0-9]+$ ]] || [ "$mihomo_last" -lt 1 ] || [ "$mihomo_last" -gt 254 ]; then
-        echo "❌ 无效的 mihomo IPv4 最后一段：$mihomo_last"
-        return 1
-    fi
-    echo "📌 mihomo IPv4 最后一段：$mihomo_last"
+    local mihomo_last
+    mihomo_last="$(prompt_ipv4_last_octet \
+      "请输入 mihomo IPv4 最后一段（1-254，回车默认 120）: " 120)" || return 1
 
     # 3) 计算 IP / IPv6 / MAC / Gateway（基于 SELECTED_MACVLAN）
     calculate_ip_mac "$mihomo_last"
