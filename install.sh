@@ -59,6 +59,7 @@ function show_menu() {
 # 全局保存用户选择的 macvlan 网络名
 SELECTED_MACVLAN=""
 
+# 选择macvlan
 select_macvlan_or_exit() {
     mapfile -t macvlan_networks < <(docker network ls --format '{{.Name}}' | grep '^macvlan' || true)
     if [ ${#macvlan_networks[@]} -eq 0 ]; then
@@ -88,8 +89,22 @@ select_macvlan_or_exit() {
 
 # 计算IP地址对应MAC地址
 ip_to_mac() {
+  # IPv4 -> MAC: 02:<ip1hex>:<ip2hex>:<ip3hex>:<ip4hex>:86
+  # 例：10.86.20.254 -> 02:0a:56:14:fe:86
+  local ip1 ip2 ip3 ip4
   IFS='.' read -r ip1 ip2 ip3 ip4 <<< "$1"
-  printf '86:88:%02x:%02x:%02x:%02x\n' $ip1 $ip2 $ip3 $ip4
+
+  # 基本校验（避免空/非数字）
+  if [[ ! "$ip1" =~ ^[0-9]+$ || ! "$ip2" =~ ^[0-9]+$ || ! "$ip3" =~ ^[0-9]+$ || ! "$ip4" =~ ^[0-9]+$ ]]; then
+    echo ""
+    return 1
+  fi
+  if (( ip1<0 || ip1>255 || ip2<0 || ip2>255 || ip3<0 || ip3>255 || ip4<0 || ip4>255 )); then
+    echo ""
+    return 1
+  fi
+
+  printf '02:%02x:%02x:%02x:%02x:86\n' "$ip1" "$ip2" "$ip3" "$ip4"
 }
 
 # 计算IPv4对应IPv6前缀
