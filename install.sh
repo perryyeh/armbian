@@ -1389,17 +1389,12 @@ install_mosdns() {
         [ -n "$mihomo" ] || { echo "❌ 无法解析 IPv4：$mihomo_input"; return 1; }
     fi
 
-    echo "📌 mosdns 上游 mihomo IPv4：$mihomo"
+    echo "📌 上游 mihomo / surge IPv4：$mihomo"
 
     # 2) 选择 mosdns IPv4 最后一段（回车默认 119）
     local mosdns_last
-    read -r -p "请输入 mosdns IPv4 最后一段（1-254，回车默认 119）: " mosdns_last
-    if [ -z "$mosdns_last" ]; then
-        mosdns_last=119
-    elif [[ ! "$mosdns_last" =~ ^[0-9]+$ ]] || [ "$mosdns_last" -lt 1 ] || [ "$mosdns_last" -gt 254 ]; then
-        echo "❌ 无效的 mosdns IPv4 最后一段：$mosdns_last"
-        return 1
-    fi
+    mosdns_last="$(prompt_ipv4_last_octet \
+      "请输入 mosdns IPv4 最后一段（1-254，回车默认 119）: " 119)" || return 1
 
     # 3) 计算 mosdns IP / IPv6 / MAC / 网关（基于 SELECTED_MACVLAN）
     calculate_ip_mac "$mosdns_last"
