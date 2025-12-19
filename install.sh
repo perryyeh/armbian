@@ -1248,6 +1248,11 @@ install_mihomo() {
     mihomomac=$calculated_mac
     gateway=$calculated_gateway
 
+    USE_IPV6=0
+    if docker network inspect "$SELECTED_MACVLAN" | jq -e '.[0].EnableIPv6==true and (.[0].IPAM.Config[]?.Subnet|test(":"))' >/dev/null 2>&1; then
+      USE_IPV6=1
+    fi
+
     # 4) 输入目录（回车退出）
     read -r -p "即将安装 mihomo，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
     if [ -z "$dockerapps" ]; then
@@ -1299,16 +1304,6 @@ install_mihomo() {
         sed -i "s/10.0.0.1/${gateway}/g" config.yaml
     fi
 
-    # 8) 让 docker-compose 使用你选的 macvlan（如果 compose 写死 name: macvlan）
-    if [ -f "docker-compose.yml" ]; then
-        if grep -qE 'name:\s*macvlan\b' docker-compose.yml; then
-            sed -i "s/name:\\s*macvlan\\b/name: ${SELECTED_MACVLAN}/g" docker-compose.yml
-        fi
-    else
-        echo "❌ 未找到 docker-compose.yml，请确认仓库中已包含该文件"
-        return 1
-    fi
-
     # 9) 生成 .env 文件供 docker compose 使用（补充写入选中的 macvlan）
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
@@ -1321,11 +1316,19 @@ EOF
     cat .env
     echo
 
+    if [ "$USE_IPV6" -eq 1 ] && [ -z "$mihomo6" ]; then
+        echo "❌ 该 macvlan 网络启用了 IPv6，但未能计算出 mihomo6（可能 IPv6 子网解析失败）"
+        return 1
+    fi
+
     # 10) 校验 docker-compose 配置（非常重要，避免把自己网断了）
     echo "🔎 校验 docker compose 配置..."
 
     # 10.1 .env 基本校验
-    required_vars=(mihomo4 mihomo6 mihomomac dockerapps macvlan_name)
+    required_vars=(MACVLAN_NET mihomo4 mihomomac)
+    if [ "$USE_IPV6" -eq 1 ]; then
+      required_vars+=(mihomo6)
+    fi
     for v in "${required_vars[@]}"; do
         if ! grep -q "^${v}=" .env; then
             echo "❌ .env 缺少必要变量：$v"
@@ -1334,22 +1337,30 @@ EOF
         fi
     done
 
-    # 10.2 docker compose 语法 / 变量展开校验
-    if ! docker compose config >/tmp/mihomo.compose.check 2>/tmp/mihomo.compose.err; then
-        echo "❌ docker compose 配置校验失败："
-        sed 's/^/  /' /tmp/mihomo.compose.err
-        echo
-        echo "⚠️ 未执行 docker compose up，避免中断现有网络"
-        return 1
+    # 10.2 + 11) 校验并启动（IPv6 时用合并 compose）
+    if [ "$USE_IPV6" -eq 1 ] && [ -f docker-compose.ipv6.yml ]; then
+        if ! docker compose -f docker-compose.yml -f docker-compose.ipv6.yml config \
+            >/tmp/mihomo.compose.check 2>/tmp/mihomo.compose.err; then
+            echo "❌ docker compose 配置校验失败："
+            sed 's/^/  /' /tmp/mihomo.compose.err
+            echo "⚠️ 未执行 docker compose up，避免中断现有网络"
+            return 1
+        fi
+        echo "✅ docker compose 配置校验通过（IPv6 合并配置）"
+        docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d
+    else
+        if ! docker compose config >/tmp/mihomo.compose.check 2>/tmp/mihomo.compose.err; then
+            echo "❌ docker compose 配置校验失败："
+            sed 's/^/  /' /tmp/mihomo.compose.err
+            echo "⚠️ 未执行 docker compose up，避免中断现有网络"
+            return 1
+        fi
+        echo "✅ docker compose 配置校验通过"
+        docker compose up -d
     fi
 
-    echo "✅ docker compose 配置校验通过"
-
-    # 11) 启动容器
-    docker compose up -d
-
     echo "✅ mihomo 已启动！访问地址：http://${mihomo}:9090/ui/  密码：admin"
-    if [ -n "$mihomo6" ]; then
+    if [ "$USE_IPV6" -eq 1 ]; then
         echo "IPv6：${mihomo6}"
     else
         echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
