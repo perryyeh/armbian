@@ -169,6 +169,23 @@ prompt_ipv4_last_octet() {
     echo "$v"
 }
 
+macvlan_ipv6_enabled() {
+  # 用法：macvlan_ipv6_enabled "macvlan_name"  ; 返回 0=启用且有IPv6子网，1=否则
+  local net="$1"
+  docker network inspect "$net" 2>/dev/null | jq -e \
+    '.[0].EnableIPv6==true and (.[0].IPAM.Config[]?.Subnet | test(":"))' \
+    >/dev/null 2>&1
+}
+
+write_env_file() {
+  local path="$1"; shift
+  # 用法：write_env_file ".env" "k1=v1" "k2=v2" ...
+  : > "$path" || return 1
+  for line in "$@"; do
+    printf '%s\n' "$line" >> "$path" || return 1
+  done
+}
+
 calculate_ip_mac() {
   local last_octet=$1
   local net_name="${2:-${SELECTED_MACVLAN:-macvlan}}"
