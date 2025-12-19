@@ -266,6 +266,228 @@ detect_mihomo_ip() {
   echo ""
 }
 
+# 仓库更新
+repo_stage_update() {
+  # 用法：
+  # repo_stage_update "项目名" "/data/dockerapps" "repo_url" "dir_name"
+  # echo "WORK_DIR=$WORK_DIR NEED_SWITCH=$NEED_SWITCH TARGET_DIR=$TARGET_DIR BAK_DIR=$BAK_DIR"
+  #
+  # 结果输出（通过全局变量）：
+  #   WORK_DIR    = 后续操作目录（可能是 TARGET_DIR 或 next_dir）
+  #   NEED_SWITCH = 1 表示 WORK_DIR 是 next，需要后面 switch
+  #   TARGET_DIR  = 正式目录（如 /data/dockerapps/mihomo）
+  #   NEXT_DIR    = next 目录（如 /data/dockerapps/mihomo.next-xxx）
+  #   BAK_DIR     = 备份目录（如 /data/dockerapps/mihomo.bak-xxx，只有切换时才会真的用）
+  #
+  # 失败会 return 1
+
+  local name="$1"
+  local base="$2"
+  local repo_url="$3"
+  local dir_name="$4"
+
+  local ts; ts="$(date +%Y%m%d-%H%M%S)"
+
+  TARGET_DIR="${base%/}/${dir_name}"
+  WORK_DIR=""
+  NEED_SWITCH=0
+  NEXT_DIR=""
+  BAK_DIR=""
+
+  if [ -d "$TARGET_DIR/.git" ]; then
+    echo "🔄 [$name] 检测到现有仓库，尝试 git pull（不中断现有目录）..."
+    if git -C "$TARGET_DIR" pull --rebase --autostash; then
+      WORK_DIR="$TARGET_DIR"
+      return 0
+    fi
+
+    echo "⚠️ [$name] git pull 失败：走 next clone（校验通过后再切换）"
+    local tmp="${base%/}/${dir_name}.tmp-${ts}"
+    NEXT_DIR="${base%/}/${dir_name}.next-${ts}"
+    BAK_DIR="${base%/}/${dir_name}.bak-${ts}"
+    rm -rf "$tmp" "$NEXT_DIR" 2>/dev/null || true
+
+    if git clone "$repo_url" "$tmp" && mv "$tmp" "$NEXT_DIR"; then
+      WORK_DIR="$NEXT_DIR"
+      NEED_SWITCH=1
+      echo "✅ [$name] next 目录已准备：$NEXT_DIR"
+      return 0
+    fi
+
+    echo "❌ [$name] next clone 失败：保持现有目录不变（避免断网/断服务）"
+    rm -rf "$tmp" "$NEXT_DIR" 2>/dev/null || true
+    return 1
+  fi
+
+  if [ -d "$TARGET_DIR" ]; then
+    # 目录存在但不是 git（比如用户手动拷贝了）
+    echo "⚠️ [$name] 目录存在但不是 git：走 next clone（成功后再切换）"
+    local tmp="${base%/}/${dir_name}.tmp-${ts}"
+    NEXT_DIR="${base%/}/${dir_name}.next-${ts}"
+    BAK_DIR="${base%/}/${dir_name}.bak-${ts}"
+    rm -rf "$tmp" "$NEXT_DIR" 2>/dev/null || true
+
+    if git clone "$repo_url" "$tmp" && mv "$tmp" "$NEXT_DIR"; then
+      WORK_DIR="$NEXT_DIR"
+      NEED_SWITCH=1
+      echo "✅ [$name] next 目录已准备：$NEXT_DIR"
+      return 0
+    fi
+
+    echo "❌ [$name] clone 失败：保持现有目录不动（避免断网/断服务）"
+    rm -rf "$tmp" "$NEXT_DIR" 2>/dev/null || true
+    return 1
+  fi
+
+  echo "⬇️ [$name] 未检测到目录，直接 clone 到正式目录：$TARGET_DIR"
+  if git clone "$repo_url" "$TARGET_DIR"; then
+    WORK_DIR="$TARGET_DIR"
+    NEED_SWITCH=0
+    return 0
+  fi
+  return 1
+}
+
+# 校验+启动+检查
+compose_validate_and_up() {
+  # 用法：
+  # compose_validate_and_up "项目名" "/path/to/workdir" "service_name" "compose_files..." ["--force-recreate"]
+  #
+  # 示例：
+  # compose_validate_and_up "mihomo" "$WORK_DIR" "mihomo" docker-compose.yml docker-compose.ipv6.yml --force-recreate
+
+  local name="$1"; shift
+  local workdir="$1"; shift
+  local svc="$1"; shift
+
+  local force=0
+  local -a files=()
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "--force-recreate" ]; then
+      force=1
+      shift
+      break
+    fi
+    files+=("$1")
+    shift
+  done
+
+  [ ${#files[@]} -eq 0 ] && files=("docker-compose.yml")
+
+  cd "$workdir" || return 1
+
+  echo "🔎 [$name] docker compose config 校验..."
+  local -a fargs=()
+  for f in "${files[@]}"; do fargs+=("-f" "$f"); done
+
+  if ! docker compose "${fargs[@]}" config >/tmp/"$name".compose.check 2>/tmp/"$name".compose.err; then
+    echo "❌ [$name] compose 校验失败："
+    sed 's/^/  /' /tmp/"$name".compose.err
+    return 1
+  fi
+
+  echo "✅ [$name] compose 校验通过，启动服务..."
+  if [ $force -eq 1 ]; then
+    docker compose "${fargs[@]}" up -d --force-recreate
+  else
+    docker compose "${fargs[@]}" up -d
+  fi
+
+  sleep 2
+  if [ -n "$svc" ]; then
+    if ! docker inspect -f '{{.State.Running}}' "$svc" 2>/dev/null | grep -q true; then
+      echo "❌ [$name] 容器未处于 running：$svc"
+      docker logs --tail=80 "$svc" 2>/dev/null || true
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
+# 切换next+正式目录再update一次
+repo_switch_if_needed() {
+  # 用法：
+  # repo_switch_if_needed "项目名" "/data/dockerapps" "dir_name" "$WORK_DIR" "$NEED_SWITCH" "$BAK_DIR"
+  # 成功后会把 WORK_DIR 更新为正式目录
+
+  local name="$1"
+  local base="$2"
+  local dir_name="$3"
+
+  if [ "${NEED_SWITCH:-0}" -ne 1 ]; then
+    return 0
+  fi
+
+  local target="${base%/}/${dir_name}"
+
+  echo "🔁 [$name] 启动成功，开始切换目录：next -> $target（旧目录备份）"
+
+  # 备份旧目录（如果存在）
+  if [ -d "$target" ]; then
+    BAK_DIR="${BAK_DIR:-${base%/}/${dir_name}.bak-$(date +%Y%m%d-%H%M%S)}"
+    mv "$target" "$BAK_DIR" || { echo "❌ [$name] 备份旧目录失败：$target"; return 1; }
+  fi
+
+  # next -> 正式
+  mv "$WORK_DIR" "$target" || {
+    echo "❌ [$name] 切换失败，尝试回滚..."
+    [ -n "${BAK_DIR:-}" ] && [ -d "$BAK_DIR" ] && mv "$BAK_DIR" "$target" 2>/dev/null || true
+    return 1
+  }
+
+  WORK_DIR="$target"
+  echo "✅ [$name] 已切换到正式目录：$WORK_DIR"
+  return 0
+}
+
+# 删除备份+检查
+repo_offer_delete_backup() {
+  # 用法：
+  # repo_offer_delete_backup "项目名" "$BAK_DIR" "container_name"
+
+  local name="$1"
+  local bak="$2"
+  local container="$3"
+
+  [ -z "$bak" ] && return 0
+  [ ! -d "$bak" ] && return 0
+
+  # 检查容器是否还在挂载 bak
+  if [ -n "$container" ]; then
+    local m
+    m="$(docker inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' "$container" 2>/dev/null | grep -F "$bak" || true)"
+    if [ -n "$m" ]; then
+      echo "⚠️ [$name] 检测到容器仍挂载备份目录：$bak"
+      echo "   为安全起见不允许删除。请确认已在正式目录 --force-recreate 重建后再删。"
+      return 0
+    fi
+  fi
+
+  read -r -p "是否删除旧的 [$name] 目录备份？($bak) [y/N]: " ans
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    rm -rf "$bak"
+    echo "🗑️ 已删除：$bak"
+  else
+    echo "ℹ️ 已保留：$bak"
+  fi
+}
+
+# 校验参数
+env_require_vars() {
+    local env_file="$1"; shift
+    local missing=0
+
+    for v in "$@"; do
+        if ! grep -q "^${v}=" "$env_file"; then
+            echo "❌ $env_file 缺少必要变量：$v"
+            missing=1
+        fi
+    done
+
+    [ "$missing" -eq 0 ]
+}
+
 # ========== 功能函数 ==========
 
 function os_info() { cat /etc/os-release; }
@@ -996,9 +1218,9 @@ EOF
 }
 
 install_adguardhome() {
-    echo "🔧 安装 AdGuardHome（compose 模板来自 Git 仓库 + 固定 MAC）"
+    echo "🔧 安装 AdGuardHome（需要选择 macvlan 网络）"
 
-    # 0) 选择 macvlan（回车退出）
+    # 1) 选择 macvlan（回车退出）
     select_macvlan_or_exit
     case $? in
       0) ;;
@@ -1006,102 +1228,81 @@ install_adguardhome() {
       *) return 1 ;;
     esac
 
-    # 1) 选择上游 mosdns（用于替换 AdGuardHome.yaml，可选）
-    local mosdns_last
-    read -r -p "请输入 mosdns IPv4 最后一段（1-254，回车默认 119）: " mosdns_last
-    if [ -z "$mosdns_last" ]; then
-        mosdns_last=119
-    elif [[ ! "$mosdns_last" =~ ^[0-9]+$ ]] || [ "$mosdns_last" -lt 1 ] || [ "$mosdns_last" -gt 254 ]; then
-        echo "❌ 无效的 mosdns IPv4 最后一段：$mosdns_last"
-        return 1
-    fi
-    calculate_ip_mac "$mosdns_last"
-    local mosdns="$calculated_ip"
-    local mosdns6="$calculated_ip6"
+    # 2) 计算 AdGuardHome IP / IPv6 / MAC / Gateway
+    #    这里沿用你原逻辑：adguard=114，mosdns=119
+    local adguard_last="114"
+    local mosdns_last="119"
 
-    # 2) 选择 AdGuardHome IPv4 最后一段（回车默认 114）
-    local adg_last
-    read -r -p "请输入 AdGuardHome IPv4 最后一段（1-254，回车默认 114）: " adg_last
-    if [ -z "$adg_last" ]; then
-        adg_last=114
-    elif [[ ! "$adg_last" =~ ^[0-9]+$ ]] || [ "$adg_last" -lt 1 ] || [ "$adg_last" -gt 254 ]; then
-        echo "❌ 无效的 AdGuardHome IPv4 最后一段：$adg_last"
-        return 1
-    fi
-
-    calculate_ip_mac "$adg_last"
+    calculate_ip_mac "$adguard_last"
     local adguard="$calculated_ip"
     local adguard6="$calculated_ip6"
     local adguardmac="$calculated_mac"
     local gateway="$calculated_gateway"
 
-    # 3) 输入目录（回车退出）
+    calculate_ip_mac "$mosdns_last"
+    local mosdns="$calculated_ip"
+    local mosdns6="$calculated_ip6"
+
+    # 3) 是否启用 IPv6（网络 EnableIPv6 且存在 IPv6 子网）
+    local USE_IPV6=0
+    if docker network inspect "$SELECTED_MACVLAN" | jq -e \
+      '.[0].EnableIPv6==true and (.[0].IPAM.Config[]?.Subnet|test(":"))' >/dev/null 2>&1; then
+      USE_IPV6=1
+    fi
+
+    # 4) 输入目录（回车退出）
     local dockerapps
     read -r -p "即将安装 AdGuardHome，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
     if [ -z "$dockerapps" ]; then
         echo "✅ 已退出 AdGuardHome 安装。"
         return 0
     fi
-
-    mkdir -p "${dockerapps}/adguardwork" "${dockerapps}" || return 1
-
-    # 4) 清理旧目录（仓库 clone 目录）
+    mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
-    if [ -d "${dockerapps}/adguardhome" ]; then
-        echo "⚠️ 检测到 ${dockerapps}/adguardhome 已存在，正在删除..."
-        rm -rf "${dockerapps}/adguardhome"
-    fi
 
-    # 5) clone 仓库（仓库内自带 docker-compose.yml）
-    git clone https://github.com/perryyeh/adguardhome.git "${dockerapps}/adguardhome" || return 1
-    cd "${dockerapps}/adguardhome" || return 1
+    # 5) 仓库更新（用通用函数：不中断现有目录；失败走 next；成功后再切）
+    local REPO_URL="https://github.com/perryyeh/adguardhome.git"
+    repo_stage_update "adguardhome" "$dockerapps" "$REPO_URL" "adguardhome" || return 1
 
-    # 6) 写 .env（compose 读取）
+    cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
+
+    # 6) 生成 .env（供 compose 使用）
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
 adguard4=${adguard}
 adguard6=${adguard6}
 adguardmac=${adguardmac}
-workdir=${dockerapps}/adguardwork
-confdir=${dockerapps}/adguardhome
+mosdns4=${mosdns}
+mosdns6=${mosdns6}
+gateway4=${gateway}
 EOF
 
-    # 7) 确保 conf 目录存在（给 AdGuardHome 持久化）
-
-    # 8) 如已存在 AdGuardHome.yaml，则替换上游（可选）
-    if [ -f "${dockerapps}/adguardhome/AdGuardHome.yaml" ]; then
-        sed -i "s/10.0.1.119/${mosdns}/g" "${dockerapps}/adguardhome/AdGuardHome.yaml"
-        if [ -n "$mosdns6" ]; then
-            sed -i "s/fd10::1:119/${mosdns6}/g" "${dockerapps}/adguardhome/AdGuardHome.yaml"
-        fi
-        if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
-            sed -i "s/10.0.0.1/${gateway}/g" "${dockerapps}/adguardhome/AdGuardHome.yaml"
-        fi
-    else
-        echo "ℹ️ 未找到 AdGuardHome.yaml：首次启动后可在 WebUI 配置上游 DNS（或你之后再替换）。"
-    fi
-
-    echo "✅ 已生成 .env："
+    echo "✅ 已生成 .env 文件："
     cat .env
     echo
 
-    # 9) 启动（无 IPv6 就只用基础 compose；有 IPv6 再叠加 override）
-    docker rm -f adguardhome >/dev/null 2>&1 || true
+    # ✅ 7) 保留你原来的替换逻辑（不要删/不要改）
+    # 替换 dns 服务地址：mosdns 的 IP
+    sed -i "s/10.0.1.119/${mosdns}/g" AdGuardHome.yaml
+    sed -i "s/fd10::1:119/${mosdns6}/g" AdGuardHome.yaml
+    # 替换 dhcp 网关：当前网关
+    sed -i "s/10.0.0.1/${gateway}/g" AdGuardHome.yaml
 
-    if [ -n "$adguard6" ]; then
-        docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d
-    else
-        docker compose -f docker-compose.yml up -d
-    fi
+    # 8) compose 校验并启动（通用函数里做 config 校验 + up）
+    compose_validate_and_up "adguardhome" "$WORK_DIR" "$USE_IPV6" "adguardhome" || return 1
 
-    echo "✅ AdGuardHome 已启动：${adguard}"
-    echo "  macvlan 网络: ${SELECTED_MACVLAN}"
-    echo "  MAC        : ${adguardmac}"
-    echo "  上游 mosdns : ${mosdns}"
-    if [ -n "$adguard6" ]; then
-        echo "  IPv6       : ${adguard6}"
+    # 9) 如果用了 next 目录并且启动成功：切回正式目录（并在正式目录 --force-recreate）
+    repo_switch_if_needed "adguardhome" "$dockerapps" "adguardhome" || return 1
+
+    # 10) 可选删除备份（带挂载检查）
+    repo_offer_delete_backup "adguardhome" "$BAK_DIR" "adguardhome"
+
+    echo "✅ AdGuardHome 已启动！"
+    echo "   Web: http://${adguard}:3000/"
+    if [ "$USE_IPV6" -eq 1 ]; then
+        echo "   IPv6: ${adguard6}"
     else
-        echo "  IPv6       : 未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
+        echo "   IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
     fi
 }
 
@@ -1116,30 +1317,23 @@ install_mosdns() {
       *) return 1 ;;
     esac
 
-    # 仅用于写 mosdns 上游：只需要 mihomo IPv4
+    # 1) 仅用于写 mosdns 上游：mihomo IPv4
     local mihomo_input mihomo
 
     read -r -p "请输入 mihomo / surge IPv4（可输完整IP或最后一段；回车默认 120）: " mihomo_input
-
     if [ -z "$mihomo_input" ]; then
-        calculate_ip_mac 120
-        mihomo="$calculated_ip"
-    elif [[ "$mihomo_input" =~ ^[0-9]+$ ]]; then
-        if [ "$mihomo_input" -lt 1 ] || [ "$mihomo_input" -gt 254 ]; then
-            echo "❌ 无效的最后一段：$mihomo_input"
-            return 1
-        fi
-        calculate_ip_mac "$mihomo_input"
-        mihomo="$calculated_ip"
-    else
-        mihomo=$(echo "$mihomo_input" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)
-        [ -n "$mihomo" ] || { echo "❌ 无法解析 IPv4：$mihomo_input"; return 1; }
+        mihomo_input=120
     fi
 
+    if [[ "$mihomo_input" =~ ^[0-9]+$ ]]; then
+        # 只输入了最后一段
+        mihomo="$(get_ipv4_prefix_from_macvlan "$SELECTED_MACVLAN").$mihomo_input"
+    else
+        mihomo="$mihomo_input"
+    fi
     echo "📌 mosdns 上游 mihomo IPv4：$mihomo"
 
-    # 2) 选择 mosdns IPv4 最后一段（回车默认 119）
-    local mosdns_last
+    # 2) 选择 mosdns IPv4 最后一段
     read -r -p "请输入 mosdns IPv4 最后一段（1-254，回车默认 119）: " mosdns_last
     if [ -z "$mosdns_last" ]; then
         mosdns_last=119
@@ -1148,15 +1342,21 @@ install_mosdns() {
         return 1
     fi
 
-    # 3) 计算 mosdns IP / IPv6 / MAC / 网关（基于 SELECTED_MACVLAN）
+    # 3) 计算 IP / IPv6 / MAC / Gateway
     calculate_ip_mac "$mosdns_last"
-    local mosdns mosdns6 mosdnsmac gateway
-    mosdns="$calculated_ip"
-    mosdns6="$calculated_ip6"
-    mosdnsmac="$calculated_mac"
-    gateway="$calculated_gateway"
+    mosdns4=$calculated_ip
+    mosdns6=$calculated_ip6
+    mosdnsmac=$calculated_mac
+    gateway=$calculated_gateway
 
-    # 4) 输入目录（回车退出）
+    USE_IPV6=0
+    if docker network inspect "$SELECTED_MACVLAN" | jq -e \
+        '.[0].EnableIPv6==true and (.[0].IPAM.Config[]?.Subnet|test(":"))' \
+        >/dev/null 2>&1; then
+        USE_IPV6=1
+    fi
+
+    # 4) 输入目录
     local dockerapps
     read -r -p "即将安装 mosdns，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
     if [ -z "$dockerapps" ]; then
@@ -1167,56 +1367,62 @@ install_mosdns() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 5) 清理旧目录（重装就清掉）
-    if [ -d "${dockerapps}/mosdns" ]; then
-        echo "⚠️ 检测到 ${dockerapps}/mosdns 已存在，正在删除..."
-        rm -rf "${dockerapps}/mosdns"
-    fi
+    # 5) 仓库阶段更新（统一抽象）
+    local REPO_URL="https://github.com/perryyeh/mosdns.git"
+    repo_stage_update "mosdns" "$dockerapps" "$REPO_URL" "mosdns" || return 1
+    cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 6) clone 仓库（仓库内自带 docker-compose.yml）
-    git clone https://github.com/perryyeh/mosdns.git || return 1
-    cd "${dockerapps}/mosdns" || return 1
-
-    # 7) 替换 config.yaml 里上游 mihomo / gateway
+    # 6) 替换 mosdns 配置中的 mihomo 上游（⚠️ 原有逻辑保留）
     if [ -f "config.yaml" ]; then
+        echo "🔁 替换 mosdns 上游为 mihomo：$mihomo"
         sed -i "s/198.18.0.2/${mihomo}/g" config.yaml
-        if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
-            sed -i "s/10.0.0.1/${gateway}/g" config.yaml
-        fi
-    else
-        echo "❌ 未找到 ${dockerapps}/mosdns/config.yaml"
-        return 1
     fi
 
-    # 8) 写 .env（compose 读取）
+    # 7) 替换 gateway（⚠️ 原有逻辑保留）
+    if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
+        echo "🔁 替换 mosdns 网关为：$gateway"
+        sed -i "s/10.0.0.1/${gateway}/g" config.yaml
+    fi
+
+    # 8) 生成 .env
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
-mosdns4=${mosdns}
+mosdns4=${mosdns4}
 mosdns6=${mosdns6}
 mosdnsmac=${mosdnsmac}
+mihomo=${mihomo}
 EOF
 
     echo "✅ 已生成 .env："
     cat .env
     echo
 
-    # 9) 启动（无 IPv6 就只用基础 compose；有 IPv6 再叠加 override）
-    docker rm -f mosdns >/dev/null 2>&1 || true
-
-    if [ -n "$mosdns6" ]; then
-        docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d
-    else
-        docker compose -f docker-compose.yml up -d
+    # 9) .env 基本校验（原 10.1）
+    required_vars=(MACVLAN_NET mosdns4 mosdnsmac mihomo)
+    if [ "$USE_IPV6" -eq 1 ]; then
+        required_vars+=(mosdns6)
     fi
 
-    echo "✅ mosdns 已启动：${mosdns}"
-    echo "  上游 mihomo : ${mihomo}"
-    echo "  macvlan 网络: ${SELECTED_MACVLAN}"
-    echo "  MAC        : ${mosdnsmac}"
-    if [ -n "$mosdns6" ]; then
-        echo "  IPv6       : ${mosdns6}"
-    else
-        echo "  IPv6       : 未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
+    for v in "${required_vars[@]}"; do
+        if ! grep -q "^${v}=" .env; then
+            echo "❌ .env 缺少必要变量：$v"
+            return 1
+        fi
+    done
+
+    # 10) 校验并启动 compose（统一抽象）
+    compose_validate_and_up "mosdns" "$WORK_DIR" "$USE_IPV6" "mosdns" || return 1
+
+    # 11) 如果使用了 next 目录，切换为正式目录
+    repo_switch_if_needed "mosdns" "$dockerapps" "mosdns" || return 1
+
+    # 12) 询问是否删除备份
+    repo_offer_delete_backup "mosdns" "$BAK_DIR" "mosdns"
+
+    echo "✅ mosdns 已启动！"
+    echo "📍 IPv4：$mosdns4"
+    if [ "$USE_IPV6" -eq 1 ]; then
+        echo "📍 IPv6：$mosdns6"
     fi
 }
 
@@ -1263,48 +1469,17 @@ install_mihomo() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 5/6) 更新仓库：不要先删旧目录（mihomo 可能正在用它翻墙）
+    # 5/6) repo 分阶段更新（内部会设置 WORK_DIR / NEED_SWITCH / BAK_DIR 等全局变量）
     REPO_URL="https://github.com/perryyeh/mihomo.git"
-    MIHOMO_DIR="${dockerapps}/mihomo"
-
-    if [ -d "$MIHOMO_DIR/.git" ]; then
-        echo "🔄 检测到现有 mihomo 仓库，尝试 git pull 更新（不中断现有挂载目录）..."
-        if ! git -C "$MIHOMO_DIR" pull --rebase --autostash; then
-            echo "⚠️ git pull 失败：保留现有目录不动，尝试走“临时目录 clone -> 成功后切换”"
-            TS="$(date +%Y%m%d-%H%M%S)"
-            TMP_DIR="${dockerapps}/mihomo.tmp-${TS}"
-
-            rm -rf "$TMP_DIR" 2>/dev/null || true
-            if git clone "$REPO_URL" "$TMP_DIR"; then
-                echo "✅ 临时目录 clone 成功，开始切换..."
-                mv "$MIHOMO_DIR" "${MIHOMO_DIR}.bak-${TS}"
-                mv "$TMP_DIR" "$MIHOMO_DIR"
-            else
-                echo "❌ 临时目录 clone 也失败：保持现有 mihomo 不变（避免断网）。"
-                rm -rf "$TMP_DIR" 2>/dev/null || true
-                return 1
-            fi
-        fi
-
-    elif [ -d "$MIHOMO_DIR" ]; then
-        echo "⚠️ ${MIHOMO_DIR} 存在但不是 git 仓库：先备份再 clone（避免直接 rm 造成 mihomo 掉线）"
-        TS="$(date +%Y%m%d-%H%M%S)"
-        mv "$MIHOMO_DIR" "${MIHOMO_DIR}.bak-${TS}"
-        git clone "$REPO_URL" "$MIHOMO_DIR" || return 1
-
-    else
-        echo "⬇️ 未检测到 mihomo 目录，直接 clone..."
-        git clone "$REPO_URL" "$MIHOMO_DIR" || return 1
-    fi
-
-    cd "$MIHOMO_DIR" || return 1
+    repo_stage_update "mihomo" "$dockerapps" "$REPO_URL" "mihomo" || return 1
+    cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
     # 7) 替换 config.yaml 里的网关
     if [ -f "config.yaml" ] && [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
         sed -i "s/10.0.0.1/${gateway}/g" config.yaml
     fi
 
-    # 9) 生成 .env 文件供 docker compose 使用（补充写入选中的 macvlan）
+    # 8) 生成 .env（compose 会用到）
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
 mihomo4=${mihomo}
@@ -1321,43 +1496,33 @@ EOF
         return 1
     fi
 
-    # 10) 校验 docker-compose 配置（非常重要，避免把自己网断了）
-    echo "🔎 校验 docker compose 配置..."
+    # === 9.1 .env 基本校验（抽象函数） ===
+    required_vars=(MACVLAN_NET mihomo4 mihomamac)
+    [ "$USE_IPV6" -eq 1 ] && required_vars+=(mihomo6)
 
-    # 10.1 .env 基本校验
-    required_vars=(MACVLAN_NET mihomo4 mihomomac)
-    if [ "$USE_IPV6" -eq 1 ]; then
-      required_vars+=(mihomo6)
-    fi
-    for v in "${required_vars[@]}"; do
-        if ! grep -q "^${v}=" .env; then
-            echo "❌ .env 缺少必要变量：$v"
-            echo "⚠️ 已取消启动，保留现有 mihomo 容器不变"
-            return 1
-        fi
-    done
+    env_require_vars ".env" "${required_vars[@]}" || {
+        echo "⚠️ .env 校验失败，取消启动，避免断网"
+        return 1
+    }
 
-    # 10.2 + 11) 校验并启动（IPv6 时用合并 compose）
+    # 9) 选择 compose 文件列表
+    compose_files=(docker-compose.yml)
     if [ "$USE_IPV6" -eq 1 ] && [ -f docker-compose.ipv6.yml ]; then
-        if ! docker compose -f docker-compose.yml -f docker-compose.ipv6.yml config \
-            >/tmp/mihomo.compose.check 2>/tmp/mihomo.compose.err; then
-            echo "❌ docker compose 配置校验失败："
-            sed 's/^/  /' /tmp/mihomo.compose.err
-            echo "⚠️ 未执行 docker compose up，避免中断现有网络"
-            return 1
-        fi
-        echo "✅ docker compose 配置校验通过（IPv6 合并配置）"
-        docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d
-    else
-        if ! docker compose config >/tmp/mihomo.compose.check 2>/tmp/mihomo.compose.err; then
-            echo "❌ docker compose 配置校验失败："
-            sed 's/^/  /' /tmp/mihomo.compose.err
-            echo "⚠️ 未执行 docker compose up，避免中断现有网络"
-            return 1
-        fi
-        echo "✅ docker compose 配置校验通过"
-        docker compose up -d
+        compose_files+=(docker-compose.ipv6.yml)
     fi
+
+    # 10) 校验并启动（注意：第三个参数是容器名）
+    compose_validate_and_up "mihomo" "$WORK_DIR" "mihomo" "${compose_files[@]}" || return 1
+
+    # 11) 若 staged(next) 启动成功，则切换到正式目录
+    repo_switch_if_needed "mihomo" "$dockerapps" "mihomo" || return 1
+
+    # 12) 切换后用正式目录再强制重建一次，让挂载源稳定到 /.../mihomo
+    cd "$WORK_DIR" 2>/dev/null || true
+    compose_validate_and_up "mihomo" "$WORK_DIR" "mihomo" "${compose_files[@]}" --force-recreate || return 1
+
+    # 13) 可选删除备份（带挂载检查）
+    repo_offer_delete_backup "mihomo" "$BAK_DIR" "mihomo"
 
     echo "✅ mihomo 已启动！访问地址：http://${mihomo}:9090/ui/  密码：admin"
     if [ "$USE_IPV6" -eq 1 ]; then
