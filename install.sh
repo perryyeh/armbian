@@ -684,7 +684,7 @@ create_macvlan_bridge() {
     fi
     echo "🌐 IPv4 子网(Subnet): $subnet4_cidr"
 
-    iprange4_cidr=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .IPRange // empty' | head -n1)
+    iprange4_cidr=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.IPRange? != null) | select(.IPRange | test(":") | not) | .IPRange' | head -n1)
     if [ -n "$iprange4_cidr" ] && [ "$iprange4_cidr" != "null" ]; then
         echo "🌐 IPv4 IPRange: $iprange4_cidr"
         base4="${iprange4_cidr%/*}"   # 例如 10.86.21.0
@@ -699,6 +699,10 @@ create_macvlan_bridge() {
     bridge4="${base4%.*}.254"
     bridge4_cidr="${bridge4}/${prefix4}"
     echo "📍 计划 bridge IPv4: $bridge4_cidr"
+
+    # === 新增：基于 bridge IPv4 生成稳定 MAC（使用已有函数） ===
+    bridge_mac="$(ip_to_mac "$bridge4")"
+    echo "🧷 计划固定 bridge MAC: $bridge_mac"
 
     # === IPv6 部分：IPRange 优先，没有则用 Subnet；统一收敛到 /64，bridge 用 ::eeee ===
     subnet6_cidr=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet // empty' | head -n1)
@@ -828,6 +832,7 @@ ip link del "$bridge_if" 2>/dev/null || true
 
 # 创建 macvlan bridge 接口
 ip link add "$bridge_if" link "$parent_if" type macvlan mode bridge
+ip link set dev "$bridge_if" address "$bridge_mac"
 
 # 配置 IPv4 地址（掩码跟随 IPRange/退回 Subnet）
 ip addr add "$bridge4_cidr" dev "$bridge_if"
