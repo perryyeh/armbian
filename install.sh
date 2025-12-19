@@ -1683,32 +1683,71 @@ run_watchtower_once() {
 # =====================
 migrate_docker_datadir() {
     # 前置校验
-    if [ -z "$BASH_VERSION" ]; then exec /usr/bin/env bash "$0" "$@"; fi
-    if [ "$EUID" -ne 0 ]; then echo "请以 root 权限运行（sudo bash $0）"; return 1; fi
+    if [ -z "${BASH_VERSION:-}" ]; then exec /usr/bin/env bash "$0" "$@"; fi
+    if [ "${EUID:-$(id -u)}" -ne 0 ]; then echo "请以 root 权限运行（sudo bash $0）"; return 1; fi
     if ! command -v docker >/dev/null 2>&1; then
-        echo "未检测到 Docker，请先安装 Docker 后再迁移。"; return 1
+        echo "未检测到 Docker，请先安装 Docker 后再迁移。"
+        return 1
+    fi
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "未检测到 systemctl，无法停止/启动 docker 服务。"
+        return 1
     fi
 
-    local OLD_ROOT="/var/lib/docker"
-    local NEW_ROOT
+    local DEFAULT_ROOT="/var/lib/docker"
+    local CURRENT_ROOT=""
+    local NEW_ROOT=""
     local DAEMON_JSON="/etc/docker/daemon.json"
     local BACKUP_SUFFIX
     BACKUP_SUFFIX="$(date +%Y%m%d-%H%M%S)"
 
-    # 读取用户输入的新目录
-    read -rp "请输入迁移目标目录（例如 /data/docker）： " NEW_ROOT
+    # 读取当前 Docker Root Dir（优先 docker info）
+    CURRENT_ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+    if [[ -z "$CURRENT_ROOT" ]]; then
+        # docker daemon 可能没起，兜底从 daemon.json 读
+        if [[ -f "$DAEMON_JSON" ]]; then
+            CURRENT_ROOT="$(sed -n 's/.*"data-root"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DAEMON_JSON" | head -n1)"
+        fi
+        [[ -z "$CURRENT_ROOT" ]] && CURRENT_ROOT="$DEFAULT_ROOT"
+    fi
+
+    echo "📌 Docker 默认目录：$DEFAULT_ROOT"
+    echo "📌 Docker 当前目录：$CURRENT_ROOT"
+    echo
+
+    # 如果已经不是默认目录，询问是否继续迁移
+    if [[ "$CURRENT_ROOT" != "$DEFAULT_ROOT" ]]; then
+        echo "⚠️ 检测到 Docker 已不在默认目录（已迁移过）。"
+        read -r -p "是否要再次迁移到新的目录？(y/N，回车默认不迁移): " again
+        if [[ ! "$again" =~ ^[Yy]$ ]]; then
+            echo "✅ 已取消迁移。"
+            return 0
+        fi
+    fi
+
+    # 读取用户输入的新目录（回车退出不迁移）
+    read -r -p "请输入迁移目标目录（例如 /data/docker；回车退出不迁移）: " NEW_ROOT
     if [[ -z "$NEW_ROOT" ]]; then
-        echo "未输入路径，已取消迁移。"; return 1
+        echo "✅ 未输入路径，已退出迁移。"
+        return 0
     fi
+
+    # 规范化路径：去掉末尾 /
+    NEW_ROOT="${NEW_ROOT%/}"
+
+    # 目标目录必须存在（按你原逻辑）
     if [[ ! -d "$NEW_ROOT" ]]; then
-        echo "目录不存在：$NEW_ROOT  —— 已取消迁移。"; return 1
+        echo "❌ 目录不存在：$NEW_ROOT  —— 已取消迁移。"
+        return 1
     fi
-    if [[ "$NEW_ROOT" == "$OLD_ROOT" ]]; then
-        echo "目标目录与当前目录相同，无需迁移。"; return 0
+
+    if [[ "$NEW_ROOT" == "$CURRENT_ROOT" ]]; then
+        echo "✅ 目标目录与当前目录相同，无需迁移。"
+        return 0
     fi
 
     # 停止 docker + socket（避免 socket 抢跑旧参数）
-    systemctl stop docker docker.socket || true
+    systemctl stop docker docker.socket >/dev/null 2>&1 || true
 
     # 依赖：rsync
     if ! command -v rsync >/dev/null 2>&1; then
@@ -1716,28 +1755,30 @@ migrate_docker_datadir() {
         apt-get update -y && apt-get install -y rsync
     fi
 
-    # 同步数据
+    # 同步数据（从 CURRENT_ROOT -> NEW_ROOT）
     mkdir -p "$NEW_ROOT"
-    if [[ -d "$OLD_ROOT" && -n "$(ls -A "$OLD_ROOT" 2>/dev/null || true)" ]]; then
-        rsync -aHAX --delete --numeric-ids "$OLD_ROOT"/ "$NEW_ROOT"/
+    if [[ -d "$CURRENT_ROOT" && -n "$(ls -A "$CURRENT_ROOT" 2>/dev/null || true)" ]]; then
+        rsync -aHAX --delete --numeric-ids "$CURRENT_ROOT"/ "$NEW_ROOT"/
         echo "✅ 数据已同步到 $NEW_ROOT"
     else
-        echo "ℹ️ $OLD_ROOT 为空或不存在，将创建全新 Docker 根目录"
+        echo "ℹ️ $CURRENT_ROOT 为空或不存在，将创建全新 Docker 根目录"
     fi
 
-    # 备份旧目录以便回滚
-    if [[ -d "$OLD_ROOT" ]]; then
-        mv "$OLD_ROOT" "${OLD_ROOT}.bak-${BACKUP_SUFFIX}"
-        echo "🧩 已备份旧目录到 ${OLD_ROOT}.bak-${BACKUP_SUFFIX}"
+    # 备份旧目录以便回滚（备份 CURRENT_ROOT）
+    local OLD_BAK=""
+    if [[ -d "$CURRENT_ROOT" ]]; then
+        OLD_BAK="${CURRENT_ROOT}.bak-${BACKUP_SUFFIX}"
+        mv "$CURRENT_ROOT" "$OLD_BAK"
+        echo "🧩 已备份旧目录到 $OLD_BAK"
     fi
-    mkdir -p "$OLD_ROOT"  # 占位
+    mkdir -p "$CURRENT_ROOT"  # 占位，防止某些脚本依赖路径存在
 
-    # 目录链权限：/data 至少 755；data-root 目录 711；所有权 root:root
+    # 目录链权限：父目录至少 755；data-root 目录 711；所有权 root:root
     chmod 755 "$(dirname "$NEW_ROOT")" 2>/dev/null || true
-    chmod 711 "$NEW_ROOT"
-    chown -R root:root "$NEW_ROOT"
+    chmod 711 "$NEW_ROOT" 2>/dev/null || true
+    chown -R root:root "$NEW_ROOT" 2>/dev/null || true
 
-    # 写回 daemon.json（显式设置 data-root + 日志轮转）
+    # 备份并写回 daemon.json（显式设置 data-root + 日志轮转）
     mkdir -p "$(dirname "$DAEMON_JSON")"
     if [[ -f "$DAEMON_JSON" ]]; then
         cp -a "$DAEMON_JSON" "${DAEMON_JSON}.bak-${BACKUP_SUFFIX}"
@@ -1754,42 +1795,43 @@ migrate_docker_datadir() {
 }
 EOF
 
-    # 如果 systemd 里写死了 --data-root，则覆写为不带参数（使用 daemon.json）
-    if systemctl cat docker | grep -q -- "--data-root="; then
-      mkdir -p /etc/systemd/system/docker.service.d
-      tee /etc/systemd/system/docker.service.d/override.conf >/dev/null <<'OVR'
+    # 如果 systemd 里写死了 --data-root，则覆写为不带该参数（使用 daemon.json）
+    if systemctl cat docker 2>/dev/null | grep -q -- "--data-root="; then
+        mkdir -p /etc/systemd/system/docker.service.d
+        tee /etc/systemd/system/docker.service.d/override.conf >/dev/null <<'OVR'
 [Service]
 ExecStart=
-ExecStart=/usr/bin/dockerd
+ExecStart=/usr/bin/dockerd -H fd://
 OVR
-      echo "🧩 已写入 systemd override，移除 --data-root 覆盖"
+        echo "🧩 已写入 systemd override，移除 --data-root 覆盖"
     fi
 
     systemctl daemon-reload
 
     # 启动 docker（不启动 socket，直接启 service）
-    systemctl start docker
+    systemctl start docker || { echo "❌ 启动 docker 失败，请查看：journalctl -u docker --no-pager -n 200"; goto_rollback=1; }
 
     # 校验根目录是否生效
     local ROOT_DIR
-    ROOT_DIR=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+    ROOT_DIR="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
     if [[ "$ROOT_DIR" == "$NEW_ROOT" ]]; then
         echo "✅ 迁移成功：Docker Root Dir = $ROOT_DIR"
-        echo "🧹 如确认正常，可删除备份释放空间：rm -rf ${OLD_ROOT}.bak-${BACKUP_SUFFIX}"
+        if [[ -n "$OLD_BAK" ]]; then
+            echo "🧹 如确认正常，可删除备份释放空间：rm -rf $OLD_BAK"
+        fi
         return 0
     fi
 
     # 未生效则回滚
-    echo "❌ 迁移校验失败：当前 Docker Root Dir = $ROOT_DIR"
+    echo "❌ 迁移校验失败：当前 Docker Root Dir = ${ROOT_DIR:-未知}"
     echo "↩️ 回滚到迁移前……"
-    systemctl stop docker || true
-    rm -rf "$OLD_ROOT"
-    if [[ -d "${OLD_ROOT}.bak-${BACKUP_SUFFIX}" ]]; then
-        mv "${OLD_ROOT}.bak-${BACKUP_SUFFIX}" "$OLD_ROOT"
-    fi
+
+    systemctl stop docker docker.socket >/dev/null 2>&1 || true
+
+    # 恢复 daemon.json：回滚到 CURRENT_ROOT（迁移前）
     tee "$DAEMON_JSON" >/dev/null <<EOF
 {
-  "data-root": "$OLD_ROOT",
+  "data-root": "$CURRENT_ROOT",
   "log-driver": "json-file",
   "log-opts": {
     "max-size": "20m",
@@ -1797,8 +1839,18 @@ OVR
   }
 }
 EOF
+
+    # 恢复目录：移除占位，恢复备份
+    rm -rf "$CURRENT_ROOT"
+    if [[ -n "$OLD_BAK" && -d "$OLD_BAK" ]]; then
+        mv "$OLD_BAK" "$CURRENT_ROOT"
+        echo "🧩 已恢复旧目录：$CURRENT_ROOT"
+    else
+        echo "⚠️ 未找到旧目录备份（$OLD_BAK），请手动检查。"
+    fi
+
     systemctl daemon-reload
-    systemctl start docker || true
+    systemctl start docker >/dev/null 2>&1 || true
     echo "已回滚至迁移前状态。"
     return 1
 }
