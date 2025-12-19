@@ -1274,7 +1274,7 @@ install_adguardhome() {
 
     # 2) 输入 AdGuardHome IPv4 最后一段（默认 114）-> 计算 adguard/adguard6/adguardmac/gateway
     local adg_last adguard adguard6 adguardmac gateway
-    mihomo_last="$(prompt_ipv4_last_octet \
+    adg_last="$(prompt_ipv4_last_octet \
       "请输入 mihomo IPv4 最后一段（1-254，回车默认 120）: " \
       120
     )" || return 1
