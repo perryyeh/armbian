@@ -1294,7 +1294,11 @@ install_adguardhome() {
     fi
 
     # 8) compose 校验并启动（复用你现成的通用函数）
-    compose_validate_and_up "adguardhome" "$WORK_DIR" "$USE_IPV6" "adguardhome" || return 1
+    if [ -n "$adguard6" ] && [ -f "$WORK_DIR/docker-compose.ipv6.yml" ]; then
+      compose_validate_and_up "adguardhome" "$WORK_DIR" "adguardhome" docker-compose.yml docker-compose.ipv6.yml || return 1
+    else
+      compose_validate_and_up "adguardhome" "$WORK_DIR" "adguardhome" docker-compose.yml || return 1
+    fi
 
     # 9) 如果用了 next 目录并且启动成功：切换回正式目录（你已有逻辑）
     repo_switch_if_needed "adguardhome" "$dockerapps" "adguardhome" || return 1
@@ -1430,7 +1434,11 @@ EOF
     done
 
     # 10.2 + 11) 校验并启动（使用通用函数，别删）
-    compose_validate_and_up "mosdns" "$WORK_DIR" "$USE_IPV6" "mosdns" || return 1
+    if [ -n "$mosdns6" ] && [ -f "$WORK_DIR/docker-compose.ipv6.yml" ]; then
+      compose_validate_and_up "mosdns" "$WORK_DIR" "mosdns" docker-compose.yml docker-compose.ipv6.yml || return 1
+    else
+      compose_validate_and_up "mosdns" "$WORK_DIR" "mosdns" docker-compose.yml || return 1
+    fi
 
     # 12) 如果用了 next 目录，且已启动成功，再切换到正式目录
     repo_switch_if_needed "mosdns" "$dockerapps" "mosdns" || return 1
