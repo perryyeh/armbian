@@ -150,25 +150,6 @@ cidr_contains_ip() {
   (( (ipi & mask) == (neti & mask) ))
 }
 
-prompt_ipv4_last_octet() {
-    local prompt="$1"
-    local default="$2"
-    local v
-
-    read -r -p "$prompt" v
-    if [ -z "$v" ]; then
-        echo "$default"
-        return 0
-    fi
-
-    if [[ ! "$v" =~ ^[0-9]+$ ]] || [ "$v" -lt 1 ] || [ "$v" -gt 254 ]; then
-        echo "❌ 无效的 IPv4 最后一段：$v" >&2
-        return 1
-    fi
-
-    echo "$v"
-}
-
 macvlan_ipv6_enabled() {
   # 用法：macvlan_ipv6_enabled "macvlan_name"  ; 返回 0=启用且有IPv6子网，1=否则
   local net="$1"
@@ -522,6 +503,23 @@ env_require_vars() {
     done
 
     [ "$missing" -eq 0 ]
+}
+
+prompt_ipv4_last_octet() {
+  # 用法：prompt_ipv4_last_octet "提示语" 默认值
+  local prompt="$1"
+  local def="$2"
+  local v
+
+  read -r -p "$prompt" v
+  v="${v:-$def}"
+
+  if [[ ! "$v" =~ ^[0-9]+$ ]] || [ "$v" -lt 1 ] || [ "$v" -gt 254 ]; then
+    echo "❌ 无效的 IPv4 最后一段：$v"
+    return 1
+  fi
+
+  echo "$v"
 }
 
 # ========== 功能函数 ==========
@@ -1266,14 +1264,20 @@ install_adguardhome() {
 
     # 1) 输入 mosdns IPv4 最后一段（默认 119）-> 计算 mosdns/mosdns6
     local mosdns_last mosdns mosdns6
-    mosdns_last="$(prompt_ipv4_last_octet "请输入 mosdns IPv4 最后一段" 119)" || return 1
+    mosdns_last="$(prompt_ipv4_last_octet \
+      "请输入 mosdns IPv4 最后一段（1-254，回车默认 119）: " \
+      119
+    )" || return 1
     calculate_ip_mac "$mosdns_last"
     mosdns="$calculated_ip"
     mosdns6="$calculated_ip6"
 
     # 2) 输入 AdGuardHome IPv4 最后一段（默认 114）-> 计算 adguard/adguard6/adguardmac/gateway
     local adg_last adguard adguard6 adguardmac gateway
-    adg_last="$(prompt_ipv4_last_octet "请输入 AdGuardHome IPv4 最后一段" 114)" || return 1
+    mihomo_last="$(prompt_ipv4_last_octet \
+      "请输入 mihomo IPv4 最后一段（1-254，回车默认 120）: " \
+      120
+    )" || return 1
     calculate_ip_mac "$adg_last"
     adguard="$calculated_ip"
     adguard6="$calculated_ip6"
