@@ -702,6 +702,10 @@ create_macvlan_bridge() {
 
     # === 新增：基于 bridge IPv4 生成稳定 MAC（使用已有函数） ===
     bridge_mac="$(ip_to_mac "$bridge4")"
+    if [ -z "$bridge_mac" ]; then
+      echo "❌ ip_to_mac 计算失败：bridge4=$bridge4"
+      return 1
+    fi
     echo "🧷 计划固定 bridge MAC: $bridge_mac"
 
     # === IPv6 部分：IPRange 优先，没有则用 Subnet；统一收敛到 /64，bridge 用 ::eeee ===
