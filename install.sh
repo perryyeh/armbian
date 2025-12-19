@@ -150,6 +150,25 @@ cidr_contains_ip() {
   (( (ipi & mask) == (neti & mask) ))
 }
 
+prompt_ipv4_last_octet() {
+    local prompt="$1"
+    local default="$2"
+    local v
+
+    read -r -p "$prompt" v
+    if [ -z "$v" ]; then
+        echo "$default"
+        return 0
+    fi
+
+    if [[ ! "$v" =~ ^[0-9]+$ ]] || [ "$v" -lt 1 ] || [ "$v" -gt 254 ]; then
+        echo "❌ 无效的 IPv4 最后一段：$v" >&2
+        return 1
+    fi
+
+    echo "$v"
+}
+
 calculate_ip_mac() {
   local last_octet=$1
   local net_name="${2:-${SELECTED_MACVLAN:-macvlan}}"
