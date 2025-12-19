@@ -1258,15 +1258,41 @@ install_mihomo() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 5) 删除旧目录
-    if [ -d "${dockerapps}/mihomo" ]; then
-      echo "⚠️ 检测到 ${dockerapps}/mihomo 已存在，正在删除..."
-      rm -rf "${dockerapps}/mihomo"
+    # 5/6) 更新仓库：不要先删旧目录（mihomo 可能正在用它翻墙）
+    REPO_URL="https://github.com/perryyeh/mihomo.git"
+    MIHOMO_DIR="${dockerapps}/mihomo"
+
+    if [ -d "$MIHOMO_DIR/.git" ]; then
+        echo "🔄 检测到现有 mihomo 仓库，尝试 git pull 更新（不中断现有挂载目录）..."
+        if ! git -C "$MIHOMO_DIR" pull --rebase --autostash; then
+            echo "⚠️ git pull 失败：保留现有目录不动，尝试走“临时目录 clone -> 成功后切换”"
+            TS="$(date +%Y%m%d-%H%M%S)"
+            TMP_DIR="${dockerapps}/mihomo.tmp-${TS}"
+
+            rm -rf "$TMP_DIR" 2>/dev/null || true
+            if git clone "$REPO_URL" "$TMP_DIR"; then
+                echo "✅ 临时目录 clone 成功，开始切换..."
+                mv "$MIHOMO_DIR" "${MIHOMO_DIR}.bak-${TS}"
+                mv "$TMP_DIR" "$MIHOMO_DIR"
+            else
+                echo "❌ 临时目录 clone 也失败：保持现有 mihomo 不变（避免断网）。"
+                rm -rf "$TMP_DIR" 2>/dev/null || true
+                return 1
+            fi
+        fi
+
+    elif [ -d "$MIHOMO_DIR" ]; then
+        echo "⚠️ ${MIHOMO_DIR} 存在但不是 git 仓库：先备份再 clone（避免直接 rm 造成 mihomo 掉线）"
+        TS="$(date +%Y%m%d-%H%M%S)"
+        mv "$MIHOMO_DIR" "${MIHOMO_DIR}.bak-${TS}"
+        git clone "$REPO_URL" "$MIHOMO_DIR" || return 1
+
+    else
+        echo "⬇️ 未检测到 mihomo 目录，直接 clone..."
+        git clone "$REPO_URL" "$MIHOMO_DIR" || return 1
     fi
 
-    # 6) 拉取配置仓库
-    git clone https://github.com/perryyeh/mihomo.git || return 1
-    cd "${dockerapps}/mihomo" || return 1
+    cd "$MIHOMO_DIR" || return 1
 
     # 7) 替换 config.yaml 里的网关
     if [ -f "config.yaml" ] && [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
@@ -1295,7 +1321,31 @@ EOF
     cat .env
     echo
 
-    # 10) 启动容器
+    # 10) 校验 docker-compose 配置（非常重要，避免把自己网断了）
+    echo "🔎 校验 docker compose 配置..."
+
+    # 10.1 .env 基本校验
+    required_vars=(mihomo4 mihomo6 mihomomac dockerapps macvlan_name)
+    for v in "${required_vars[@]}"; do
+        if ! grep -q "^${v}=" .env; then
+            echo "❌ .env 缺少必要变量：$v"
+            echo "⚠️ 已取消启动，保留现有 mihomo 容器不变"
+            return 1
+        fi
+    done
+
+    # 10.2 docker compose 语法 / 变量展开校验
+    if ! docker compose config >/tmp/mihomo.compose.check 2>/tmp/mihomo.compose.err; then
+        echo "❌ docker compose 配置校验失败："
+        sed 's/^/  /' /tmp/mihomo.compose.err
+        echo
+        echo "⚠️ 未执行 docker compose up，避免中断现有网络"
+        return 1
+    fi
+
+    echo "✅ docker compose 配置校验通过"
+
+    # 11) 启动容器
     docker compose up -d
 
     echo "✅ mihomo 已启动！访问地址：http://${mihomo}:9090/ui/  密码：admin"
