@@ -1272,9 +1272,8 @@ MACVLAN_NET=${SELECTED_MACVLAN}
 adguard4=${adguard}
 adguard6=${adguard6}
 adguardmac=${adguardmac}
-mosdns4=${mosdns}
-mosdns6=${mosdns6}
-gateway4=${gateway}
+workdir=${dockerapps}/adguardwork
+confdir=${dockerapps}/adguardhome
 EOF
 
     echo "✅ 已生成 .env 文件："
@@ -1284,9 +1283,14 @@ EOF
     # ✅ 7) 保留你原来的替换逻辑（不要删/不要改）
     # 替换 dns 服务地址：mosdns 的 IP
     sed -i "s/10.0.1.119/${mosdns}/g" AdGuardHome.yaml
-    sed -i "s/fd10::1:119/${mosdns6}/g" AdGuardHome.yaml
+    if [ -n "$mosdns6" ]; then
+        sed -i "s/fd10::1:119/${mosdns6}/g" AdGuardHome.yaml
+    fi
     # 替换 dhcp 网关：当前网关
-    sed -i "s/10.0.0.1/${gateway}/g" AdGuardHome.yaml
+     if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
+        sed -i "s/10.0.0.1/${gateway}/g" AdGuardHome.yaml
+    fi
+
 
     # 8) compose 校验并启动（通用函数里做 config 校验 + up）
     compose_validate_and_up "adguardhome" "$WORK_DIR" "$USE_IPV6" "adguardhome" || return 1
@@ -1298,7 +1302,10 @@ EOF
     repo_offer_delete_backup "adguardhome" "$BAK_DIR" "adguardhome"
 
     echo "✅ AdGuardHome 已启动！"
-    echo "   Web: http://${adguard}:3000/"
+    echo "  Web: http://${adguard}/"
+    echo "  macvlan: ${SELECTED_MACVLAN}"
+    echo "  MAC        : ${adguardmac}"
+    echo "  上游 mosdns : ${mosdns}"
     if [ "$USE_IPV6" -eq 1 ]; then
         echo "   IPv6: ${adguard6}"
     else
