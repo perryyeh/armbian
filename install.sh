@@ -377,11 +377,11 @@ compose_validate_and_up() {
   local workdir="$1"; shift
   local svc="$1"; shift
 
-  local force=1
+  local force=0
   local -a files=()
   while [ $# -gt 0 ]; do
-    if [ "$1" = "--no-force-recreate" ]; then
-      force=0
+    if [ "$1" = "--force-recreate" ]; then
+      force=1
       shift
       break
     fi
@@ -393,11 +393,25 @@ compose_validate_and_up() {
 
   cd "$workdir" || return 1
 
+  # ✅ 关键修复：用数组保存 compose 命令，避免出现 docker "compose config" 这种单 token
+  local -a COMPOSE=()
+  if docker compose version >/dev/null 2>&1; then
+    COMPOSE=(docker compose)
+  elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE=(docker-compose)
+  else
+    echo "❌ [$name] 未找到 docker compose / docker-compose"
+    return 1
+  fi
+
   echo "🔎 [$name] docker compose config 校验..."
   local -a fargs=()
-  for f in "${files[@]}"; do fargs+=("-f" "$f"); done
+  local f
+  for f in "${files[@]}"; do
+    fargs+=("-f" "$f")
+  done
 
-  if ! docker compose "${fargs[@]}" config >/tmp/"$name".compose.check 2>/tmp/"$name".compose.err; then
+  if ! "${COMPOSE[@]}" "${fargs[@]}" config >/tmp/"$name".compose.check 2>/tmp/"$name".compose.err; then
     echo "❌ [$name] compose 校验失败："
     sed 's/^/  /' /tmp/"$name".compose.err
     return 1
@@ -405,9 +419,9 @@ compose_validate_and_up() {
 
   echo "✅ [$name] compose 校验通过，启动服务..."
   if [ $force -eq 1 ]; then
-    docker compose "${fargs[@]}" up -d --force-recreate
+    "${COMPOSE[@]}" "${fargs[@]}" up -d --force-recreate
   else
-    docker compose "${fargs[@]}" up -d
+    "${COMPOSE[@]}" "${fargs[@]}" up -d
   fi
 
   sleep 2
