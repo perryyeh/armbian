@@ -1568,8 +1568,15 @@ EOF
         compose_files+=(docker-compose.ipv6.yml)
     fi
 
-    # 10) 校验并启动（注意：第三个参数是容器名）
-    compose_validate_and_up "mihomo" "$WORK_DIR" "mihomo" "${compose_files[@]}" || return 1
+    # 10) 校验并启动，next 目录只做 config 校验；正式目录才 up（避免 container_name 冲突）
+    if [ "${NEED_SWITCH:-0}" -eq 1 ]; then
+        echo "ℹ️ [mihomo] 当前为 next 目录，仅做 compose config 校验（不启动，避免容器名冲突）"
+        # 仅 config 校验（等价于 compose_validate_and_up 的前半段）
+        docker compose $(printf -- '-f %q ' "${compose_files[@]}") config >/tmp/mihomo.compose.check 2>/tmp/mihomo.compose.err \
+          || { echo "❌ [mihomo] compose 校验失败："; sed 's/^/  /' /tmp/mihomo.compose.err; return 1; }
+    else
+        compose_validate_and_up "mihomo" "$WORK_DIR" "mihomo" "${compose_files[@]}" --force-recreate || return 1
+    fi
 
     # 11) 若 staged(next) 启动成功，则切换到正式目录
     repo_switch_if_needed "mihomo" "$dockerapps" "mihomo" || return 1
