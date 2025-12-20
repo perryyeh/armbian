@@ -1205,7 +1205,8 @@ EOF
 }
 
 install_librespeed() {
-    echo "🔧 安装 LibreSpeed（git clone + docker compose + 固定 MAC）"
+
+    echo "🔧 安装 LibreSpeed（需要选择 macvlan 网络）"
 
     # 1) 选择 macvlan（回车退出）
     select_macvlan_or_exit
@@ -1277,7 +1278,8 @@ EOF
 }
 
 install_adguardhome() {
-    echo "🔧 安装 AdGuardHome（compose 模板来自 Git 仓库 + 固定 MAC）"
+
+    echo "🔧 安装 AdGuardHome（需要选择 macvlan 网络）"
 
     # 0) 选择 macvlan（回车退出）
     select_macvlan_or_exit
@@ -1319,26 +1321,29 @@ install_adguardhome() {
 
     mkdir -p "${dockerapps}/adguardwork" "${dockerapps}" || return 1
 
-    # 4) 更新/获取仓库（用你的通用函数；不改变你想要的策略）
-    #    注意：这里 repo 名称 & 目录名都用 adguardhome
+    # 4) 更新/获取仓库（stage：设置 WORK_DIR / NEED_SWITCH / TARGET_DIR / BAK_DIR）
     local REPO_URL="https://github.com/perryyeh/adguardhome.git"
     repo_stage_update "adguardhome" "$dockerapps" "$REPO_URL" "adguardhome" || return 1
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 5) 写 .env（保持你原字段）
+    # 5) 是否启用 IPv6：按你原判定（macvlan 支持 + 有 IPv6 子网）
+    local USE_IPV6=0
+    if macvlan_ipv6_enabled "$SELECTED_MACVLAN"; then
+      USE_IPV6=1
+    fi
+
+    # 6) 写 .env（字段不变；但 confdir 用 WORK_DIR，避免 next 启动还挂旧目录）
     write_env_file "$WORK_DIR/.env" \
       "MACVLAN_NET=${SELECTED_MACVLAN}" \
       "adguard4=${adguard}" \
       "adguard6=${adguard6}" \
-      "adguardmac=${adguardmac}" \
-      "workdir=${dockerapps}/adguardwork" \
-      "confdir=${dockerapps}/adguardhome"
+      "adguardmac=${adguardmac}"
 
     echo "✅ 已生成 .env："
     cat .env
     echo
 
-    # 6) 替换逻辑（必须保留：mosdns / mosdns6 / gateway）
+    # 7) 替换逻辑（必须保留：mosdns / mosdns6 / gateway）
     if [ -f "${WORK_DIR}/AdGuardHome.yaml" ]; then
         sed -i "s/10.0.1.119/${mosdns}/g" "${WORK_DIR}/AdGuardHome.yaml"
         if [ -n "$mosdns6" ]; then
@@ -1351,24 +1356,24 @@ install_adguardhome() {
         echo "ℹ️ 未找到 AdGuardHome.yaml：首次启动后可在 WebUI 配置上游 DNS（或你之后再替换）。"
     fi
 
-    # 7) 是否启用 IPv6：仍按你原判定（macvlan 支持 + 有 IPv6 子网）
-    local USE_IPV6=0
-    if macvlan_ipv6_enabled "$SELECTED_MACVLAN"; then
-      USE_IPV6=1
+    # 8) .env 基本校验（统一用抽象函数）
+    local required_vars=(MACVLAN_NET adguard4 adguardmac)
+    [ "$USE_IPV6" -eq 1 ] && required_vars+=(adguard6)
+
+    env_require_vars ".env" "${required_vars[@]}" || {
+        echo "⚠️ .env 校验失败，取消启动，避免影响现有 adguardhome"
+        return 1
+    }
+
+    # 9) 选择 compose 文件列表
+    local compose_files=(docker-compose.yml)
+    if [ "$USE_IPV6" -eq 1 ] && [ -f "$WORK_DIR/docker-compose.ipv6.yml" ]; then
+        compose_files+=(docker-compose.ipv6.yml)
     fi
 
-    # 8) compose 校验并启动（复用你现成的通用函数）
-    if [ -n "$adguard6" ] && [ -f "$WORK_DIR/docker-compose.ipv6.yml" ]; then
-      compose_validate_and_up "adguardhome" "$WORK_DIR" "adguardhome" docker-compose.yml docker-compose.ipv6.yml || return 1
-    else
-      compose_validate_and_up "adguardhome" "$WORK_DIR" "adguardhome" docker-compose.yml || return 1
-    fi
-
-    # 9) 如果用了 next 目录并且启动成功：切换回正式目录（你已有逻辑）
-    repo_switch_if_needed "adguardhome" "$dockerapps" "adguardhome" || return 1
-
-    # 10) 可选删除备份（带挂载检查）
-    repo_offer_delete_backup "adguardhome" "$BAK_DIR" "adguardhome"
+    # 10) 停旧备份 → 起新 → 回滚（失败） → next->正式目录切换（若需要） → 正式目录再重建
+    #     （注意：第二个参数是容器名，必须和 compose 里的 container_name 一致）
+    compose_deploy_with_repo_switch "adguardhome" "adguardhome" "${compose_files[@]}" || return 1
 
     echo "✅ AdGuardHome 已启动：${adguard}"
     echo "  macvlan 网络: ${SELECTED_MACVLAN}"
@@ -1379,10 +1384,14 @@ install_adguardhome() {
     else
         echo "  IPv6       : 未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
     fi
+
+    # 11) 可选删除目录备份（带挂载检查）
+    repo_offer_delete_backup "adguardhome" "$BAK_DIR" "adguardhome"
 }
 
 install_mosdns() {
-    echo "🔧 安装 mosdns（docker compose + 固定 MAC，compose 文件来自仓库）"
+
+    echo "🔧 安装 mosdns（需要选择 macvlan 网络）"
 
     # 0) 选择 macvlan（回车退出）
     select_macvlan_or_exit
@@ -1443,14 +1452,14 @@ install_mosdns() {
     fi
     mkdir -p "$dockerapps" || return 1
 
-    # 5/6) 仓库更新：使用通用 stage 更新（不中断现有目录）
+    # 5) 仓库更新：
     local REPO_URL="https://github.com/perryyeh/mosdns.git"
     repo_stage_update "mosdns" "$dockerapps" "$REPO_URL" "mosdns" || return 1
 
     # repo_stage_update 会设置：WORK_DIR / NEED_SWITCH / NEXT_DIR / BAK_DIR（全局变量）
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 7) 替换 config.yaml 里上游 mihomo / gateway（⚠️保留你原来的逻辑，不删）
+    # 6) 替换 config.yaml 里上游 mihomo / gateway（⚠️保留你原来的逻辑，不删）
     if [ -f "config.yaml" ]; then
         # 用 # 作为分隔符更稳（避免 / 等字符导致 sed 崩）
         sed -i "s#198.18.0.2#${mihomo}#g" config.yaml
@@ -1462,7 +1471,7 @@ install_mosdns() {
         return 1
     fi
 
-    # 8) 写 .env（compose 读取）
+    # 7) 写 .env（compose 读取）
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
 mosdns4=${mosdns}
@@ -1479,34 +1488,28 @@ EOF
         return 1
     fi
 
-    # 9) 10.1 .env 基本校验（保留）
+
+    # 8) .env 基本校验
     local required_vars=(MACVLAN_NET mosdns4 mosdnsmac)
-    if [ "$USE_IPV6" -eq 1 ]; then
-        required_vars+=(mosdns6)
-    fi
-    for v in "${required_vars[@]}"; do
-        if ! grep -q "^${v}=" .env; then
-            echo "❌ .env 缺少必要变量：$v"
-            echo "⚠️ 已取消启动，保留现有 mosdns 容器不变"
-            return 1
-        fi
-    done
+    [ "$USE_IPV6" -eq 1 ] && required_vars+=(mosdns6)
 
-    # 10.2 + 11) 校验并启动（使用通用函数，别删）
-    if [ -n "$mosdns6" ] && [ -f "$WORK_DIR/docker-compose.ipv6.yml" ]; then
-      compose_validate_and_up "mosdns" "$WORK_DIR" "mosdns" docker-compose.yml docker-compose.ipv6.yml || return 1
-    else
-      compose_validate_and_up "mosdns" "$WORK_DIR" "mosdns" docker-compose.yml || return 1
+    env_require_vars ".env" "${required_vars[@]}" || {
+        echo "⚠️ .env 校验失败，取消启动，避免影响现有 mosdns"
+        return 1
+    }
+
+    # 9) 选择 compose 文件列表
+    local compose_files=(docker-compose.yml)
+    if [ "$USE_IPV6" -eq 1 ] && [ -f docker-compose.ipv6.yml ]; then
+        compose_files+=(docker-compose.ipv6.yml)
     fi
 
-    # 12) 如果用了 next 目录，且已启动成功，再切换到正式目录
-    repo_switch_if_needed "mosdns" "$dockerapps" "mosdns" || return 1
+    # 10）一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
+    compose_deploy_with_repo_switch "mosdns" "mosdns" "${compose_files[@]}" || return 1
 
-    # 13) 可选删除备份（带挂载检查）
-    repo_offer_delete_backup "mosdns" "$BAK_DIR" "mosdns"
-
+    # 11）
     echo "✅ mosdns 已启动：${mosdns}"
-    echo "  上游 mihomo : ${mihomo}"
+    echo "  上游 mihomo / surge : ${mihomo}"
     echo "  macvlan 网络: ${SELECTED_MACVLAN}"
     echo "  MAC        : ${mosdnsmac}"
     if [ "$USE_IPV6" -eq 1 ]; then
@@ -1514,9 +1517,13 @@ EOF
     else
         echo "  IPv6       : 未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
     fi
+
+    # 12) 可选删除备份（带挂载检查）
+    repo_offer_delete_backup "mosdns" "$BAK_DIR" "mosdns"
 }
 
 install_mihomo() {
+
     echo "🔧 安装 mihomo（需要选择 macvlan 网络）"
 
     # 1) 选择 macvlan（回车退出）
@@ -1554,17 +1561,17 @@ install_mihomo() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 5/6) repo 分阶段更新（内部会设置 WORK_DIR / NEED_SWITCH / BAK_DIR 等全局变量）
+    # 5) repo 分阶段更新（内部会设置 WORK_DIR / NEED_SWITCH / BAK_DIR 等全局变量）
     REPO_URL="https://github.com/perryyeh/mihomo.git"
     repo_stage_update "mihomo" "$dockerapps" "$REPO_URL" "mihomo" || return 1
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 7) 替换 config.yaml 里的网关
+    # 6) 替换 config.yaml 里的网关
     if [ -f "config.yaml" ] && [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
         sed -i "s/10.0.0.1/${gateway}/g" config.yaml
     fi
 
-    # 8) 生成 .env（compose 会用到）
+    # 7) 生成 .env（compose 会用到）
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
 mihomo4=${mihomo}
@@ -1581,7 +1588,7 @@ EOF
         return 1
     fi
 
-    # === 8.1 .env 基本校验（抽象函数） ===
+    # === 8 .env 基本校验 ===
     required_vars=(MACVLAN_NET mihomo4 mihomomac)
     [ "$USE_IPV6" -eq 1 ] && required_vars+=(mihomo6)
 
