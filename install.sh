@@ -1554,7 +1554,7 @@ EOF
     fi
 
     # === 9.1 .env 基本校验（抽象函数） ===
-    required_vars=(MACVLAN_NET mihomo4 mihomamac)
+    required_vars=(MACVLAN_NET mihomo4 mihomomac)
     [ "$USE_IPV6" -eq 1 ] && required_vars+=(mihomo6)
 
     env_require_vars ".env" "${required_vars[@]}" || {
