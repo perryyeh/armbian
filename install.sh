@@ -283,110 +283,37 @@ detect_mihomo_ip() {
   echo ""
 }
 
-# 容器校验 备份旧 切换新 失败回滚
-compose_deploy_with_repo_switch() {
-  # 用法：
-  # compose_deploy_with_repo_switch "mihomo" "$dockerapps" "mihomo" "mihomo" docker-compose.yml docker-compose.ipv6.yml
-  #
-  # 依赖 repo_stage_update 已经被调用过，且设置了：
-  #   WORK_DIR NEED_SWITCH TARGET_DIR BAK_DIR
+# 校验参数
+env_require_vars() {
+    local env_file="$1"; shift
+    local missing=0
 
-  local name="$1"; shift
-  local base="$1"; shift
-  local dir_name="$1"; shift
-  local svc="$1"; shift
-  local -a files=("$@")
+    for v in "$@"; do
+        if ! grep -q "^${v}=" "$env_file"; then
+            echo "❌ $env_file 缺少必要变量：$v"
+            missing=1
+        fi
+    done
 
-  local -a COMPOSE
-  if docker compose version >/dev/null 2>&1; then
-    COMPOSE=(docker compose)
-  elif command -v docker-compose >/dev/null 2>&1; then
-    COMPOSE=(docker-compose)
-  else
-    echo "❌ 未找到 docker compose / docker-compose"
+    [ "$missing" -eq 0 ]
+}
+
+prompt_ipv4_last_octet() {
+  # 用法：prompt_ipv4_last_octet "提示语" 默认值
+  local prompt="$1"
+  local def="$2"
+  local v
+
+  read -r -p "$prompt" v
+  v="${v:-$def}"
+
+  if [[ ! "$v" =~ ^[0-9]+$ ]] || [ "$v" -lt 1 ] || [ "$v" -gt 254 ]; then
+    echo "❌ 无效的 IPv4 最后一段：$v"
     return 1
   fi
 
-  [ ${#files[@]} -eq 0 ] && files=("docker-compose.yml")
-
-  local -a fargs=()
-  for f in "${files[@]}"; do fargs+=("-f" "$f"); done
-
-  # A) 先在 WORK_DIR 做 config 校验（不碰容器）
-  cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
-
-  echo "🔎 [$name] docker compose config 校验..."
-  if ! "${COMPOSE[@]}" "${fargs[@]}" config >/tmp/"$name".compose.check 2>/tmp/"$name".compose.err; then
-    echo "❌ [$name] compose 校验失败："
-    sed 's/^/  /' /tmp/"$name".compose.err
-    return 1
-  fi
-
-  # B) 如果是 next：必须先处理旧容器名冲突（rename 备份），再在 next 里 up
-  local ts backup_cname
-  ts="$(date +%Y%m%d-%H%M%S)"
-  backup_cname="${svc}.bak-${ts}"
-
-  if docker inspect "$svc" >/dev/null 2>&1; then
-    echo "🧩 [$name] 发现旧容器 $svc，先停止并重命名为备份：$backup_cname"
-    docker stop "$svc" >/dev/null 2>&1 || true
-    docker rename "$svc" "$backup_cname" || {
-      echo "❌ [$name] 旧容器重命名失败（无法避免 container_name 冲突）"
-      return 1
-    }
-  else
-    backup_cname=""
-  fi
-
-  echo "🚀 [$name] 启动新容器（WORK_DIR=$WORK_DIR）..."
-  if ! "${COMPOSE[@]}" "${fargs[@]}" up -d --force-recreate; then
-    echo "❌ [$name] 新容器启动失败，开始回滚..."
-
-    # 清理可能创建出来的新容器（占用 svc 名字）
-    docker rm -f "$svc" >/dev/null 2>&1 || true
-
-    # 回滚旧容器名 + 启动
-    if [ -n "$backup_cname" ] && docker inspect "$backup_cname" >/dev/null 2>&1; then
-      docker rename "$backup_cname" "$svc" >/dev/null 2>&1 || true
-      docker start "$svc" >/dev/null 2>&1 || true
-    fi
-    return 1
-  fi
-
-  # C) 新容器跑起来了：如果 NEED_SWITCH=1，再切目录（next -> 正式）
-  if [ "${NEED_SWITCH:-0}" -eq 1 ]; then
-    echo "🔁 [$name] 新容器运行成功，开始切换目录：next -> 正式"
-
-    # 备份旧目录（如果存在）
-    if [ -d "$TARGET_DIR" ]; then
-      [ -z "${BAK_DIR:-}" ] && BAK_DIR="${base%/}/${dir_name}.bak-${ts}"
-      mv "$TARGET_DIR" "$BAK_DIR" || {
-        echo "❌ [$name] 备份旧目录失败：$TARGET_DIR"
-        return 1
-      }
-    fi
-
-    # next -> 正式
-    mv "$WORK_DIR" "$TARGET_DIR" || {
-      echo "❌ [$name] next -> 正式目录切换失败（你需要手工处理目录）"
-      return 1
-    }
-
-    WORK_DIR="$TARGET_DIR"
-    NEED_SWITCH=0
-  fi
-
-  # D) 最终检查（容器必须 running）
-  sleep 1
-  if ! docker inspect -f '{{.State.Running}}' "$svc" 2>/dev/null | grep -q true; then
-    echo "❌ [$name] 容器未处于 running：$svc"
-    docker logs --tail=80 "$svc" 2>/dev/null || true
-    return 1
-  fi
-
-  # E) 把备份容器名吐出去（给后续提示是否删除用）
-  DEPLOY_BACKUP_CONTAINER="$backup_cname"
-  return 0
+ echo "📌 使用 IPv4 最后一段：$v" >&2
+ echo "$v"
 }
 
 # 仓库更新
@@ -471,165 +398,147 @@ repo_stage_update() {
   return 1
 }
 
-# 校验+启动+检查
-compose_validate_and_up() {
-  # 用法：
-  # compose_validate_and_up "项目名" "/path/to/workdir" "container_name" "compose_files..." ["--force-recreate"]
+# 容器层（停旧 → 起新 → 更新/回滚）
+compose_deploy_with_repo_switch() {
+  # 用法（推荐）：
+  #   compose_deploy_with_repo_switch "mihomo" "mihomo" docker-compose.yml docker-compose.ipv6.yml
   #
-  # 说明：
-  # - 会先做 `docker compose ... config` 校验
-  # - 如果指定了 container_name（第三个参数）且该容器已存在：
-  #     先 stop + rename 成 <name>.bak-时间戳（作为回滚点）
-  # - 然后执行 compose up（可选 --force-recreate）
-  # - up 失败或容器未 running：自动回滚（恢复旧容器）
+  # 依赖 repo_stage_update 已经被调用过，且设置了全局变量：
+  #   WORK_DIR NEED_SWITCH TARGET_DIR BAK_DIR
 
   local name="$1"; shift
-  local workdir="$1"; shift
   local svc="$1"; shift
+  local -a files=("$@")
 
-  local force=0
-  local -a files=()
-  while [ $# -gt 0 ]; do
-    if [ "$1" = "--force-recreate" ]; then
-      force=1
-      shift
-      break
-    fi
-    files+=("$1")
-    shift
-  done
+  local -a COMPOSE
+  if docker compose version >/dev/null 2>&1; then
+    COMPOSE=(docker compose)
+  elif command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE=(docker-compose)
+  else
+    echo "❌ 未找到 docker compose / docker-compose"
+    return 1
+  fi
+
   [ ${#files[@]} -eq 0 ] && files=("docker-compose.yml")
 
-  cd "$workdir" || return 1
-
-  # 1) config 校验
-  echo "🔎 [$name] docker compose config 校验..."
   local -a fargs=()
   for f in "${files[@]}"; do fargs+=("-f" "$f"); done
 
-  if ! docker compose "${fargs[@]}" config >/tmp/"$name".compose.check 2>/tmp/"$name".compose.err; then
+  # A) 先在 WORK_DIR 做 config 校验（不碰容器）
+  cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
+
+  echo "🔎 [$name] docker compose config 校验..."
+  if ! "${COMPOSE[@]}" "${fargs[@]}" config >/tmp/"$name".compose.check 2>/tmp/"$name".compose.err; then
     echo "❌ [$name] compose 校验失败："
     sed 's/^/  /' /tmp/"$name".compose.err
     return 1
   fi
 
-  # 2) 备份旧容器（stop + rename），用于回滚
-  local ts bak_name old_running did_backup=0
+  # B) 备份旧容器（stop + rename）用于回滚
+  local ts backup_cname old_running=""
   ts="$(date +%Y%m%d-%H%M%S)"
-  bak_name=""
-  old_running=""
+  backup_cname=""
 
-  if [ -n "${svc:-}" ]; then
-    # 仅匹配精确容器名（/mihomo）
-    if docker ps -a --format '{{.Names}}' | grep -qx "$svc"; then
-      bak_name="${svc}.bak-${ts}"
+  if docker ps -a --format '{{.Names}}' | grep -qx "$svc"; then
+    backup_cname="${svc}.bak-${ts}"
+    old_running="$(docker inspect -f '{{.State.Running}}' "$svc" 2>/dev/null || echo "")"
 
-      # 记录旧容器是否在跑
-      old_running="$(docker inspect -f '{{.State.Running}}' "$svc" 2>/dev/null || echo "")"
+    echo "🧩 [$name] 发现旧容器 $svc，先停止并重命名为备份：$backup_cname"
+    docker stop "$svc" >/dev/null 2>&1 || true
 
-      echo "🧩 [$name] 发现已有容器：$svc，准备备份为：$bak_name"
-      docker stop "$svc" >/dev/null 2>&1 || true
-
-      # 防止 bak_name 已存在
-      if docker ps -a --format '{{.Names}}' | grep -qx "$bak_name"; then
-        echo "❌ [$name] 备份容器名已存在：$bak_name（请手动处理后重试）"
-        return 1
-      fi
-
-      if ! docker rename "$svc" "$bak_name" >/dev/null 2>&1; then
-        echo "❌ [$name] 无法备份旧容器（rename 失败）：$svc -> $bak_name"
-        return 1
-      fi
-      did_backup=1
+    if docker ps -a --format '{{.Names}}' | grep -qx "$backup_cname"; then
+      echo "❌ [$name] 备份容器名已存在：$backup_cname（请手动处理后重试）"
+      return 1
     fi
+
+    docker rename "$svc" "$backup_cname" || {
+      echo "❌ [$name] 旧容器重命名失败（无法避免 container_name 冲突）"
+      return 1
+    }
   fi
 
-  # 3) 启动新容器
-  echo "✅ [$name] compose 校验通过，启动服务..."
-  local up_rc=0
-  if [ $force -eq 1 ]; then
-    docker compose "${fargs[@]}" up -d --force-recreate || up_rc=$?
-  else
-    docker compose "${fargs[@]}" up -d || up_rc=$?
-  fi
-
-  # 4) 失败则回滚
-  rollback() {
-    local reason="$1"
-    echo "❌ [$name] 启动失败：$reason"
-
-    # 删掉可能创建出来的新容器（占名会影响回滚 rename）
-    if [ -n "${svc:-}" ] && docker ps -a --format '{{.Names}}' | grep -qx "$svc"; then
+  rollback_container() {
+    # 删除新容器（如果占名）
+    if docker ps -a --format '{{.Names}}' | grep -qx "$svc"; then
       docker rm -f "$svc" >/dev/null 2>&1 || true
     fi
-
-    # 恢复旧容器
-    if [ $did_backup -eq 1 ] && [ -n "$bak_name" ] && docker ps -a --format '{{.Names}}' | grep -qx "$bak_name"; then
-      docker rename "$bak_name" "$svc" >/dev/null 2>&1 || true
-      if [ "$old_running" = "true" ]; then
-        docker start "$svc" >/dev/null 2>&1 || true
-      fi
+    # 还原旧容器
+    if [ -n "$backup_cname" ] && docker ps -a --format '{{.Names}}' | grep -qx "$backup_cname"; then
+      docker rename "$backup_cname" "$svc" >/dev/null 2>&1 || true
+      [ "$old_running" = "true" ] && docker start "$svc" >/dev/null 2>&1 || true
       echo "🔁 [$name] 已回滚恢复旧容器：$svc"
     fi
   }
 
-  if [ $up_rc -ne 0 ]; then
-    rollback "docker compose up 返回非 0（rc=$up_rc）"
+  rollback_dir() {
+    # 仅当我们真的把正式目录备份走了，才尝试回滚目录
+    if [ -n "${BAK_DIR:-}" ] && [ -d "$BAK_DIR" ]; then
+      rm -rf "$TARGET_DIR" 2>/dev/null || true
+      mv "$BAK_DIR" "$TARGET_DIR" 2>/dev/null || true
+      WORK_DIR="$TARGET_DIR"
+      NEED_SWITCH=0
+      echo "🔁 [$name] 已回滚恢复旧目录：$TARGET_DIR"
+    fi
+  }
+
+  # C) 在 WORK_DIR 启动新容器（next 或正式都一样）
+  echo "🚀 [$name] 启动新容器（WORK_DIR=$WORK_DIR）..."
+  if ! "${COMPOSE[@]}" "${fargs[@]}" up -d --force-recreate; then
+    echo "❌ [$name] 新容器启动失败，开始回滚..."
+    rollback_container
     return 1
   fi
 
-  # 5) running 检查（指定了 svc 才检查）
-  sleep 2
-  if [ -n "${svc:-}" ]; then
-    if ! docker inspect -f '{{.State.Running}}' "$svc" 2>/dev/null | grep -q true; then
-      docker logs --tail=80 "$svc" 2>/dev/null || true
-      rollback "新容器未处于 running：$svc"
+  # D) 如果 NEED_SWITCH=1：切 next -> 正式，并在正式目录再 up 一次（挂载稳定）
+  if [ "${NEED_SWITCH:-0}" -eq 1 ]; then
+    echo "🔁 [$name] 新容器运行成功，开始切换目录：next -> 正式"
+
+    # 备份旧目录（如果存在）
+    if [ -d "$TARGET_DIR" ]; then
+      [ -z "${BAK_DIR:-}" ] && BAK_DIR="${TARGET_DIR}.bak-${ts}"
+      mv "$TARGET_DIR" "$BAK_DIR" || {
+        echo "❌ [$name] 备份旧目录失败：$TARGET_DIR"
+        rollback_container
+        return 1
+      }
+    fi
+
+    # next -> 正式
+    if ! mv "$WORK_DIR" "$TARGET_DIR"; then
+      echo "❌ [$name] next -> 正式目录切换失败，开始回滚..."
+      rollback_dir
+      rollback_container
+      return 1
+    fi
+
+    WORK_DIR="$TARGET_DIR"
+    NEED_SWITCH=0
+
+    # 在正式目录再强制重建一次，确保挂载源稳定到正式路径
+    cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; rollback_dir; rollback_container; return 1; }
+    echo "🚀 [$name] 在正式目录再次重建（确保挂载路径稳定）..."
+    if ! "${COMPOSE[@]}" "${fargs[@]}" up -d --force-recreate; then
+      echo "❌ [$name] 正式目录重建失败，开始回滚..."
+      rollback_dir
+      rollback_container
       return 1
     fi
   fi
 
-  # 6) 成功：保留备份容器供你后续选择删除（不自动删，避免误删）
-  if [ $did_backup -eq 1 ]; then
-    echo "✅ [$name] 新容器启动成功，旧容器已备份：$bak_name"
-    echo "   （确认稳定后可手动：docker rm -f $bak_name）"
-  fi
-
-  return 0
-}
-
-# 切换next+正式目录再update一次
-repo_switch_if_needed() {
-  # 用法：
-  # repo_switch_if_needed "项目名" "/data/dockerapps" "dir_name" "$WORK_DIR" "$NEED_SWITCH" "$BAK_DIR"
-  # 成功后会把 WORK_DIR 更新为正式目录
-
-  local name="$1"
-  local base="$2"
-  local dir_name="$3"
-
-  if [ "${NEED_SWITCH:-0}" -ne 1 ]; then
-    return 0
-  fi
-
-  local target="${base%/}/${dir_name}"
-
-  echo "🔁 [$name] 启动成功，开始切换目录：next -> $target（旧目录备份）"
-
-  # 备份旧目录（如果存在）
-  if [ -d "$target" ]; then
-    BAK_DIR="${BAK_DIR:-${base%/}/${dir_name}.bak-$(date +%Y%m%d-%H%M%S)}"
-    mv "$target" "$BAK_DIR" || { echo "❌ [$name] 备份旧目录失败：$target"; return 1; }
-  fi
-
-  # next -> 正式
-  mv "$WORK_DIR" "$target" || {
-    echo "❌ [$name] 切换失败，尝试回滚..."
-    [ -n "${BAK_DIR:-}" ] && [ -d "$BAK_DIR" ] && mv "$BAK_DIR" "$target" 2>/dev/null || true
+  # E) 最终 running 检查
+  sleep 1
+  if ! docker inspect -f '{{.State.Running}}' "$svc" 2>/dev/null | grep -q true; then
+    echo "❌ [$name] 容器未处于 running：$svc"
+    docker logs --tail=80 "$svc" 2>/dev/null || true
+    echo "❌ [$name] running 检查失败，开始回滚..."
+    rollback_dir
+    rollback_container
     return 1
-  }
+  fi
 
-  WORK_DIR="$target"
-  echo "✅ [$name] 已切换到正式目录：$WORK_DIR"
+  DEPLOY_BACKUP_CONTAINER="$backup_cname"
+  [ -n "$backup_cname" ] && echo "✅ [$name] 新容器启动成功，旧容器已备份：$backup_cname"
   return 0
 }
 
@@ -663,39 +572,6 @@ repo_offer_delete_backup() {
   else
     echo "ℹ️ 已保留：$bak"
   fi
-}
-
-# 校验参数
-env_require_vars() {
-    local env_file="$1"; shift
-    local missing=0
-
-    for v in "$@"; do
-        if ! grep -q "^${v}=" "$env_file"; then
-            echo "❌ $env_file 缺少必要变量：$v"
-            missing=1
-        fi
-    done
-
-    [ "$missing" -eq 0 ]
-}
-
-prompt_ipv4_last_octet() {
-  # 用法：prompt_ipv4_last_octet "提示语" 默认值
-  local prompt="$1"
-  local def="$2"
-  local v
-
-  read -r -p "$prompt" v
-  v="${v:-$def}"
-
-  if [[ ! "$v" =~ ^[0-9]+$ ]] || [ "$v" -lt 1 ] || [ "$v" -gt 254 ]; then
-    echo "❌ 无效的 IPv4 最后一段：$v"
-    return 1
-  fi
-
- echo "📌 使用 IPv4 最后一段：$v" >&2
- echo "$v"
 }
 
 # ========== 功能函数 ==========
@@ -1485,7 +1361,6 @@ install_adguardhome() {
     echo
 
     # 6) 替换逻辑（必须保留：mosdns / mosdns6 / gateway）
-    #    ⚠️ 用明确路径更稳：WORK_DIR 下的文件（你 repo_stage_update 的工作目录）
     if [ -f "${WORK_DIR}/AdGuardHome.yaml" ]; then
         sed -i "s/10.0.1.119/${mosdns}/g" "${WORK_DIR}/AdGuardHome.yaml"
         if [ -n "$mosdns6" ]; then
@@ -1728,7 +1603,7 @@ EOF
         return 1
     fi
 
-    # === 9.1 .env 基本校验（抽象函数） ===
+    # === 8.1 .env 基本校验（抽象函数） ===
     required_vars=(MACVLAN_NET mihomo4 mihomomac)
     [ "$USE_IPV6" -eq 1 ] && required_vars+=(mihomo6)
 
@@ -1743,22 +1618,11 @@ EOF
         compose_files+=(docker-compose.ipv6.yml)
     fi
 
-    # 10) next 目录：只做 compose config 校验（不启动，避免占用容器名/影响现网）
-    if [ "${NEED_SWITCH:-0}" -eq 1 ]; then
-        echo "ℹ️ [mihomo] 当前为 next 目录，仅做 compose config 校验（不启动）"
-        docker compose $(printf -- '-f %q ' "${compose_files[@]}") config \
-          >/tmp/mihomo.compose.check 2>/tmp/mihomo.compose.err \
-          || { echo "❌ [mihomo] compose 校验失败："; sed 's/^/  /' /tmp/mihomo.compose.err; return 1; }
-    fi
+    # 10） 检查参数，停旧，启新，回滚
+    compose_deploy_with_repo_switch "mihomo" "mihomo" "${compose_files[@]}" || return 1
 
-    # 11) 切换目录（next -> 正式）
-    repo_switch_if_needed "mihomo" "$dockerapps" "mihomo" || return 1
-
-    # 12) 正式目录：用升级后的 compose_validate_and_up（内部会 stop+backup 旧容器 -> 起新 -> 失败回滚）
-    compose_validate_and_up "mihomo" "$WORK_DIR" "mihomo" "${compose_files[@]}" --force-recreate || return 1
-
-    # 13) 可选删除备份（带挂载检查）
-    # repo_offer_delete_backup "mihomo" "$BAK_DIR" "mihomo"
+    # 11) 可选删除备份（带挂载检查）
+    repo_offer_delete_backup "mihomo" "$BAK_DIR" "mihomo"
 
     echo "✅ mihomo 已启动！访问地址：http://${mihomo}:9090/ui/  密码：admin"
     if [ "$USE_IPV6" -eq 1 ]; then
