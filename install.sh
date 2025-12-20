@@ -318,18 +318,11 @@ prompt_ipv4_last_octet() {
 
 # 仓库更新
 repo_stage_update() {
-  # 用法：
+  # 用法同原来：
   # repo_stage_update "项目名" "/data/dockerapps" "repo_url" "dir_name"
-  # echo "WORK_DIR=$WORK_DIR NEED_SWITCH=$NEED_SWITCH TARGET_DIR=$TARGET_DIR BAK_DIR=$BAK_DIR"
   #
-  # 结果输出（通过全局变量）：
-  #   WORK_DIR    = 后续操作目录（可能是 TARGET_DIR 或 next_dir）
-  #   NEED_SWITCH = 1 表示 WORK_DIR 是 next，需要后面 switch
-  #   TARGET_DIR  = 正式目录（如 /data/dockerapps/mihomo）
-  #   NEXT_DIR    = next 目录（如 /data/dockerapps/mihomo.next-xxx）
-  #   BAK_DIR     = 备份目录（如 /data/dockerapps/mihomo.bak-xxx，只有切换时才会真的用）
-  #
-  # 失败会 return 1
+  # 输出全局变量：
+  #   TARGET_DIR WORK_DIR NEED_SWITCH NEXT_DIR BAK_DIR
 
   local name="$1"
   local base="$2"
@@ -344,17 +337,14 @@ repo_stage_update() {
   NEXT_DIR=""
   BAK_DIR=""
 
-  if [ -d "$TARGET_DIR/.git" ]; then
-    echo "🔄 [$name] 检测到现有仓库，尝试 git pull（不中断现有目录）..."
-    if git -C "$TARGET_DIR" pull --rebase --autostash; then
-      WORK_DIR="$TARGET_DIR"
-      return 0
-    fi
+  # ✅ 关键改动：只要正式目录存在（无论是否 git），都不 pull，直接走 next clone
+  if [ -d "$TARGET_DIR" ]; then
+    echo "🔄 [$name] 检测到现有目录：$TARGET_DIR（不做 git pull，直接走 next 部署）"
 
-    echo "⚠️ [$name] git pull 失败：走 next clone（校验通过后再切换）"
     local tmp="${base%/}/${dir_name}.tmp-${ts}"
     NEXT_DIR="${base%/}/${dir_name}.next-${ts}"
     BAK_DIR="${base%/}/${dir_name}.bak-${ts}"
+
     rm -rf "$tmp" "$NEXT_DIR" 2>/dev/null || true
 
     if git clone "$repo_url" "$tmp" && mv "$tmp" "$NEXT_DIR"; then
@@ -369,32 +359,14 @@ repo_stage_update() {
     return 1
   fi
 
-  if [ -d "$TARGET_DIR" ]; then
-    # 目录存在但不是 git（比如用户手动拷贝了）
-    echo "⚠️ [$name] 目录存在但不是 git：走 next clone（成功后再切换）"
-    local tmp="${base%/}/${dir_name}.tmp-${ts}"
-    NEXT_DIR="${base%/}/${dir_name}.next-${ts}"
-    BAK_DIR="${base%/}/${dir_name}.bak-${ts}"
-    rm -rf "$tmp" "$NEXT_DIR" 2>/dev/null || true
-
-    if git clone "$repo_url" "$tmp" && mv "$tmp" "$NEXT_DIR"; then
-      WORK_DIR="$NEXT_DIR"
-      NEED_SWITCH=1
-      echo "✅ [$name] next 目录已准备：$NEXT_DIR"
-      return 0
-    fi
-
-    echo "❌ [$name] clone 失败：保持现有目录不动（避免断网/断服务）"
-    rm -rf "$tmp" "$NEXT_DIR" 2>/dev/null || true
-    return 1
-  fi
-
+  # 不存在则首次 clone 到正式目录（NEED_SWITCH=0）
   echo "⬇️ [$name] 未检测到目录，直接 clone 到正式目录：$TARGET_DIR"
   if git clone "$repo_url" "$TARGET_DIR"; then
     WORK_DIR="$TARGET_DIR"
     NEED_SWITCH=0
     return 0
   fi
+
   return 1
 }
 
