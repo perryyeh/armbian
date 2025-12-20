@@ -367,12 +367,6 @@ repo_stage_update() {
 
 # 校验+启动+检查
 compose_validate_and_up() {
-  # 用法：
-  # compose_validate_and_up "项目名" "/path/to/workdir" "service_name" "compose_files..." ["--force-recreate"]
-  #
-  # 示例：
-  # compose_validate_and_up "mihomo" "$WORK_DIR" "mihomo" docker-compose.yml docker-compose.ipv6.yml --force-recreate
-
   local name="$1"; shift
   local workdir="$1"; shift
   local svc="$1"; shift
@@ -388,30 +382,34 @@ compose_validate_and_up() {
     files+=("$1")
     shift
   done
-
   [ ${#files[@]} -eq 0 ] && files=("docker-compose.yml")
 
   cd "$workdir" || return 1
 
-  # ✅ 关键修复：用数组保存 compose 命令，避免出现 docker "compose config" 这种单 token
+  # compose 命令选择
   local -a COMPOSE=()
+  local -a PARGS=()   # project name 参数
   if docker compose version >/dev/null 2>&1; then
     COMPOSE=(docker compose)
+    PARGS=(--project-name "$name")
   elif command -v docker-compose >/dev/null 2>&1; then
     COMPOSE=(docker-compose)
+    PARGS=(-p "$name")
   else
     echo "❌ [$name] 未找到 docker compose / docker-compose"
     return 1
   fi
 
-  echo "🔎 [$name] docker compose config 校验..."
+  # -f 参数
   local -a fargs=()
   local f
   for f in "${files[@]}"; do
     fargs+=("-f" "$f")
   done
 
-  if ! "${COMPOSE[@]}" "${fargs[@]}" config >/tmp/"$name".compose.check 2>/tmp/"$name".compose.err; then
+  echo "🔎 [$name] docker compose config 校验..."
+  if ! "${COMPOSE[@]}" "${PARGS[@]}" "${fargs[@]}" config \
+      >/tmp/"$name".compose.check 2>/tmp/"$name".compose.err; then
     echo "❌ [$name] compose 校验失败："
     sed 's/^/  /' /tmp/"$name".compose.err
     return 1
@@ -419,9 +417,9 @@ compose_validate_and_up() {
 
   echo "✅ [$name] compose 校验通过，启动服务..."
   if [ $force -eq 1 ]; then
-    "${COMPOSE[@]}" "${fargs[@]}" up -d --force-recreate
+    "${COMPOSE[@]}" "${PARGS[@]}" "${fargs[@]}" up -d --force-recreate || return 1
   else
-    "${COMPOSE[@]}" "${fargs[@]}" up -d
+    "${COMPOSE[@]}" "${PARGS[@]}" "${fargs[@]}" up -d || return 1
   fi
 
   sleep 2
@@ -432,7 +430,6 @@ compose_validate_and_up() {
       return 1
     fi
   fi
-
   return 0
 }
 
