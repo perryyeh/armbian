@@ -519,7 +519,11 @@ prompt_ipv4_last_octet() {
     return 1
   fi
 
-  echo "📌 使用 IPv4 最后一段：$v"
+ # 日志 → stderr（不污染返回值）
+  echo "📌 使用 IPv4 最后一段：$val" >&2
+
+  # 返回值 → stdout（只能是数字）
+  printf '%s\n' "$val"
 }
 
 # ========== 功能函数 ==========
