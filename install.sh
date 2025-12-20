@@ -397,11 +397,16 @@ compose_deploy_with_repo_switch() {
   local -a fargs=()
   for f in "${files[@]}"; do fargs+=("-f" "$f"); done
 
+  # ✅ 固定 project name：确保 next/正式 两次 up 属于同一个项目
+  local PROJECT
+  PROJECT="$name"         # 或者你想用 "$svc" / dir_name，都行，但要稳定
+  local -a pargs=(-p "$PROJECT")
+
   # A) 先在 WORK_DIR 做 config 校验（不碰容器）
   cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
   echo "🔎 [$name] docker compose config 校验..."
-  if ! "${COMPOSE[@]}" "${fargs[@]}" config >/tmp/"$name".compose.check 2>/tmp/"$name".compose.err; then
+  if ! "${COMPOSE[@]}" "${pargs[@]}" "${fargs[@]}" config >/tmp/"$name".compose.check 2>/tmp/"$name".compose.err; then
     echo "❌ [$name] compose 校验失败："
     sed 's/^/  /' /tmp/"$name".compose.err
     return 1
@@ -456,7 +461,7 @@ compose_deploy_with_repo_switch() {
 
   # C) 在 WORK_DIR 启动新容器（next 或正式都一样）
   echo "🚀 [$name] 启动新容器（WORK_DIR=$WORK_DIR）..."
-  if ! "${COMPOSE[@]}" "${fargs[@]}" up -d --force-recreate; then
+  if ! "${COMPOSE[@]}" "${pargs[@]}" "${fargs[@]}" up -d --force-recreate; then
     echo "❌ [$name] 新容器启动失败，开始回滚..."
     rollback_container
     return 1
@@ -490,7 +495,7 @@ compose_deploy_with_repo_switch() {
     # 在正式目录再强制重建一次，确保挂载源稳定到正式路径
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; rollback_dir; rollback_container; return 1; }
     echo "🚀 [$name] 在正式目录再次重建（确保挂载路径稳定）..."
-    if ! "${COMPOSE[@]}" "${fargs[@]}" up -d --force-recreate; then
+    if ! "${COMPOSE[@]}" "${pargs[@]}" "${fargs[@]}" up -d --force-recreate; then
       echo "❌ [$name] 正式目录重建失败，开始回滚..."
       rollback_dir
       rollback_container
@@ -510,7 +515,8 @@ compose_deploy_with_repo_switch() {
   fi
 
   DEPLOY_BACKUP_CONTAINER="$backup_cname"
-  [ -n "$backup_cname" ] && echo "✅ [$name] 新容器启动成功，旧容器已备份：$backup_cname"
+  [ -n "$backup_cname" ] && echo "✅ [$name] 新容器启动成功，旧容器已备份：$backup_cname" && echo "🧩 旧容器备份：${DEPLOY_BACKUP_CONTAINER}（确认稳定后可手动 docker rm -f 删除）"
+  
   return 0
 }
 
@@ -1590,7 +1596,7 @@ EOF
         compose_files+=(docker-compose.ipv6.yml)
     fi
 
-    # 10） 检查参数，停旧，启新，回滚
+    # 10) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
     compose_deploy_with_repo_switch "mihomo" "mihomo" "${compose_files[@]}" || return 1
 
     # 11) 可选删除备份（带挂载检查）
