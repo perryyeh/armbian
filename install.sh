@@ -515,8 +515,8 @@ compose_deploy_with_repo_switch() {
   fi
 
   DEPLOY_BACKUP_CONTAINER="$backup_cname"
-  [ -n "$backup_cname" ] && echo "✅ [$name] 新容器启动成功，旧容器已备份：$backup_cname" && echo "🧩 旧容器备份：${DEPLOY_BACKUP_CONTAINER}（确认稳定后可手动 docker rm -f 删除）"
-  
+  [ -n "$backup_cname" ] && echo "✅ [$name] 新容器启动成功，旧容器已备份：$backup_cname" && echo "🧩 确认稳定后可手动 docker rm -f ${DEPLOY_BACKUP_CONTAINER}删除"
+
   return 0
 }
 
@@ -1599,15 +1599,15 @@ EOF
     # 10) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
     compose_deploy_with_repo_switch "mihomo" "mihomo" "${compose_files[@]}" || return 1
 
-    # 11) 可选删除备份（带挂载检查）
-    repo_offer_delete_backup "mihomo" "$BAK_DIR" "mihomo"
-
     echo "✅ mihomo 已启动！访问地址：http://${mihomo}:9090/ui/  密码：admin"
     if [ "$USE_IPV6" -eq 1 ]; then
         echo "IPv6：${mihomo6}"
     else
         echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
     fi
+
+    # 11) 可选删除备份（带挂载检查）
+    repo_offer_delete_backup "mihomo" "$BAK_DIR" "mihomo"
 }
 
 install_portainer() {
