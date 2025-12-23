@@ -16,30 +16,30 @@
 
 ## 🗂️ 脚本功能目录
 
-| 序号 | 功能描述                  |
-|----|-----------------------|
-| 0  | 显示菜单                  |
-| 1  | 显示操作系统信息              |
-| 2  | 显示网卡信息                |
-| 3  | 显示磁盘信息                |
-| 4  | 显示 Docker 信息          |
-| 5  | 格式化磁盘并挂载              |
-| 7  | 安装 Docker             |
+| 序号 | 功能描述           |
+|----|----------------|
+| 0  | 显示菜单           |
+| 1  | 显示操作系统信息       |
+| 2  | 显示网卡信息         |
+| 3  | 显示磁盘信息         |
+| 4  | 显示 Docker 信息   |
+| 5  | 格式化磁盘并挂载       |
+| 7  | 安装 Docker      |
 | 8  | 创建macvlan（包括ipv4+ipv6） |
-| 9  | 清理 macvlan            |
-| 10 | 安装 Portainer 面板       |
-| 11 | 安装 LibreSpeed 测速      |
-| 14 | 安装 AdGuardHome        |
-| 19 | 安装 mosdns             |
-| 20 | 安装 mihomo             |
-| 45 | 安装 samba              |
-| 70 | 迁移docker目录            |
-| 71 | 优化docker日志            |
-| 90 | 创建macvlan bridge      |
-| 91 | 清理macvlan bridge            |
-| 97 | 安装watchtower 自动更新     |
-| 98 | 强制使用watchtower更新一次镜像  |
-| 99 | 退出脚本                  |
+| 9  | 清理 macvlan     |
+| 10 | 安装 Portainer   |
+| 11 | 安装 LibreSpeed  |
+| 14 | 安装 AdGuardHome |
+| 19 | 安装 mosdns      |
+| 20 | 安装 mihomo      |
+| 45 | 安装 samba       |
+| 70 | 迁移docker目录     |
+| 71 | 优化docker日志     |
+| 90 | 创建macvlan bridge |
+| 91 | 清理macvlan bridge     |
+| 97 | 安装watchtower 自动更新 |
+| 98 | 强制使用watchtower更新一次镜像 |
+| 99 | 退出脚本           |
 
 
 ---
@@ -73,10 +73,9 @@ git
 
 ## 📌 注意事项
 - 脚本默认使用ipv4计算出ula ipv6地址，生成类似fd10:: fd19:: fd17:: 作为 IPv6 网段，如不用默认获取请一定要输入
-- 安装错误请12回滚操作，以免流量死循环导致无法进入而重新刷机
-- 因为自用路由器不支持ula，所以ula自动生成可能有bug，请提pr
-- 本代码目前只在armbian下测试通过，其他linux请自行尝试
-- 已存在的 macvlan 网络会被删除并重新创建
+- 安装macvlan bridge错误请回滚操作，以免流量死循环导致无法进入而重新刷机
+- 本代码目前群晖7.3+（群晖需要补充缺失命令）和armbian 6.1+下测试通过，其他linux请自行尝试
+
 
 ## 📜 License
 MIT License © 2025

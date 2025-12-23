@@ -1789,7 +1789,7 @@ clean_macvlan_network() {
     done
 
     echo
-    echo "请输入要删除的网络序号，或输入 a 表示删除全部，直接回车取消。"
+    echo "请输入要删除的网络序号，或输入 a 表示删除全部，回车取消："
     read -p "你的选择: " choice
 
     if [ -z "$choice" ]; then
