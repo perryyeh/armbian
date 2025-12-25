@@ -687,7 +687,19 @@ function create_macvlan_network() {
   done
 
   read -p "输入网卡序号: " netcard_index
+  # ✅ 校验输入是否为有效序号；无效则直接退出
+  if ! [[ "$netcard_index" =~ ^[0-9]+$ ]] || [ "$netcard_index" -lt 0 ] || [ "$netcard_index" -ge "${#interfaces[@]}" ]; then
+    echo "❌ 无效的网卡序号：$netcard_index"
+    return 1
+  fi
+
   networkcard=${interfaces[$netcard_index]}
+
+  if [ -z "$networkcard" ]; then
+    echo "❌ 未能获取网卡名称（序号：$netcard_index）"
+    return 1
+  fi
+  
   echo "选择的网卡: $networkcard"
 
   # ========= VLAN 处理 =========
