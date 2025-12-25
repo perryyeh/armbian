@@ -699,7 +699,7 @@ function create_macvlan_network() {
     echo "❌ 未能获取网卡名称（序号：$netcard_index）"
     return 1
   fi
-  
+
   echo "选择的网卡: $networkcard"
 
   # ========= VLAN 处理 =========
@@ -797,8 +797,8 @@ function create_macvlan_network() {
   auto_cidr="${gw_net_ip}/${prefixlen}"
 
   echo "👉 已根据网关 $gateway 自动推算 IPv4 子网：$auto_cidr"
-
   # 用户可再覆盖 IPv4 子网
+  echo "⚠️ 提示：IPRange 应为 macvlan 专用网段（建议 /24 或更小），不要与 DHCP 或其他服务器重叠。"
   read -p "请输入 macvlan IPv4 子网CIDR (回车使用推荐 $auto_cidr): " input_cidr
   if [ -n "$input_cidr" ]; then
     cidr="$input_cidr"
@@ -864,6 +864,7 @@ function create_macvlan_network() {
     fi
 
     echo "👉 已根据 IPv6 网关 $gateway6 自动/推算 IPv6 子网：$auto_cidr6"
+    echo "⚠️ 提示：IPRange 应为 macvlan 专用网段（建议 /64 或更小），不要与 DHCP 或其他服务器重叠。"
     read -p "请输入 IPv6 子网CIDR (回车使用推荐 $auto_cidr6): " input_cidr6
     if [ -n "$input_cidr6" ]; then
       cidr6="$input_cidr6"
