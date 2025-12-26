@@ -1109,14 +1109,6 @@ create_macvlan_bridge() {
     echo "🧩 配置脚本: $setup_script"
     echo "🧩 systemd 服务: $service_name"
 
-    # —— 在写脚本之前：自动探测 mihomo 下一跳 ——
-    mihomo_ip="$(detect_mihomo_ip "$route4_cidr" "$network_info")"
-    if [ -n "$mihomo_ip" ]; then
-        echo "🔎 自动探测到 mihomo IP: $mihomo_ip"
-    else
-        echo "ℹ️ 未探测到 mihomo IP，将跳过创建时的 198.18.0.0/16 路由写入（运行时仍可用 MIHOMO 覆盖）"
-    fi
-
     read -p "确认创建/更新以上 bridge？(y/n): " yn
     if [[ ! "$yn" =~ ^[Yy]$ ]]; then
         echo "⚠️ 已取消。"
@@ -1169,24 +1161,6 @@ EOF
 ip -6 route replace "$route6_pref" dev "$bridge_if"
 EOF
     fi
-
-    # --- 追加 mihomo 路由：创建时写死（若探测到了） ---
-    if [ -n "$mihomo_ip" ]; then
-        cat <<EOF | sudo tee -a "$setup_script" >/dev/null
-
-# mihomo 专用路由（198.18.0.0/16）——创建时写入
-ip route replace 198.18.0.0/16 via "$mihomo_ip" dev "$bridge_if" 2>/dev/null || true
-EOF
-    fi
-
-# --- 运行时可覆盖（支持 MIHOMO/mihomo 环境变量） ---
-    cat <<'EOF' | sudo tee -a "$setup_script" >/dev/null
-# 运行时覆盖：若设置了 MIHOMO/mihomo，则替换 198.18/15 的下一跳
-MIHOMO_EFFECTIVE="${MIHOMO:-${mihomo:-}}"
-if [ -n "$MIHOMO_EFFECTIVE" ]; then
-  ip route replace 198.18.0.0/16 via "$MIHOMO_EFFECTIVE" dev "$bridge_if" 2>/dev/null || true
-fi
-EOF
 
     sudo chmod +x "$setup_script"
 
