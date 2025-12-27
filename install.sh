@@ -1000,7 +1000,7 @@ create_macvlan_bridge() {
 
     # 用 base 前 3 段 + .254 作为 bridge IP
     bridge4="${base4%.*}.254"
-    bridge4_cidr="${bridge4}/32"
+    bridge4_cidr="${bridge4}/${prefix4}"
     echo "📍 计划 bridge IPv4: $bridge4_cidr"
 
     # === 新增：基于 bridge IPv4 生成稳定 MAC（使用已有函数） ===
