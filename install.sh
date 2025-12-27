@@ -983,7 +983,11 @@ create_macvlan_bridge() {
     fi
     echo "🌐 IPv4 子网(Subnet): $subnet4_cidr"
 
-    iprange4_cidr=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.IPRange? != null) | select(.IPRange | test(":") | not) | .IPRange' | head -n1)
+    iprange4_cidr=$(echo "$network_info" | jq -r --arg s "$subnet4_cidr" '
+      .[0].IPAM.Config[]
+      | select((.Subnet // "") == $s)
+      | (.IPRange // empty)
+    ' | head -n1)
     if [ -n "$iprange4_cidr" ] && [ "$iprange4_cidr" != "null" ]; then
         echo "🌐 IPv4 IPRange: $iprange4_cidr"
         base4="${iprange4_cidr%/*}"   # 例如 10.86.21.0
@@ -1015,7 +1019,11 @@ create_macvlan_bridge() {
     if [ -n "$subnet6_cidr" ] && [ "$subnet6_cidr" != "null" ]; then
         echo "🌐 IPv6 子网(Subnet): $subnet6_cidr"
 
-        iprange6_cidr=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .IPRange // empty' | head -n1)
+        iprange6_cidr=$(echo "$network_info" | jq -r --arg s "$subnet6_cidr" '
+          .[0].IPAM.Config[]
+          | select((.Subnet // "") == $s)
+          | (.IPRange // empty)
+        ' | head -n1)
         if [ -n "$iprange6_cidr" ] && [ "$iprange6_cidr" != "null" ]; then
             echo "🌐 IPv6 IPRange: $iprange6_cidr"
             base6="${iprange6_cidr%/*}"    # 比如 fd10:86:20:: 或 fd10:86:20::100
@@ -1024,7 +1032,9 @@ create_macvlan_bridge() {
         fi
 
         # 归一：提纯前缀主体，统一 /64，bridge 固定 ::eeee
-        base6_prefix="${base6%%::*}"       # 例如 fd10:86:20
+        base6_addr="${subnet6_cidr%/*}"   # fd10:86:20::  或 fd10:86:20:1::
+        base6_prefix="${base6_addr%%::*}" # fd10:86:20    或 fd10:86:20:1
+
         bridge6_cidr="${base6_prefix}::eeee/64"
         route6_pref="${base6_prefix}::/64"
         echo "  计划 bridge IPv6: $bridge6_cidr"
@@ -1122,45 +1132,53 @@ create_macvlan_bridge() {
 #!/bin/bash
 set -e
 
-# 删除旧的 bridge 接口（如果存在）
+SUBNET4_CIDR="$subnet4_cidr"
+IPRANGE4_CIDR="$iprange4_cidr"
+ROUTE6_PREF="$route6_pref"
+BRIDGE6_CIDR="$bridge6_cidr"
+
+# 1. 物理层清理与创建
 ip link del "$bridge_if" 2>/dev/null || true
+ip link add "$bridge_if" link "$parent_if" address "$bridge_mac" type macvlan mode bridge
 
-# 创建 macvlan bridge 接口
-ip link add "$bridge_if" link "$parent_if" type macvlan mode bridge
-ip link set dev "$bridge_if" address "$bridge_mac"
+# 🔒 MAC 校验（关键）
+ip link show "$bridge_if" | grep -qi "$bridge_mac" || { echo "❌ MAC not set to $bridge_mac"; exit 1; }
 
-# 配置 IPv4 地址（掩码跟随 IPRange/退回 Subnet）
-ip addr add "$bridge4_cidr" dev "$bridge_if"
+# 2. IPv4 地址分配
+ip addr replace "$bridge4_cidr" dev "$bridge_if"
+
+# 3. IPv6 地址（有才配置）
+if [ -n "\$BRIDGE6_CIDR" ]; then
+  sysctl -w "net.ipv6.conf.${bridge_if}.accept_dad=0" >/dev/null || true
+  ip -6 addr replace "\$BRIDGE6_CIDR" dev "$bridge_if"
+fi
 EOF
 
-    # 配置 IPv6（如果有）
-    if [ -n "$bridge6_cidr" ]; then
-        cat <<EOF | sudo tee -a "$setup_script" >/dev/null
-# 配置 IPv6 地址（统一 /64，固定 ::eeee）
-ip -6 addr add "$bridge6_cidr" dev "$bridge_if"
-EOF
-    fi
+      cat <<EOF | sudo tee -a "$setup_script" >/dev/null
 
-    cat <<EOF | sudo tee -a "$setup_script" >/dev/null
-
-# 启动接口并开启混杂模式
+# 4. 接口启动与混杂模式
 ip link set "$bridge_if" up
 ip link set "$bridge_if" promisc on
+ip link set "$parent_if" up 2>/dev/null || true
 ip link set "$parent_if" promisc on
 
-# 放宽 rp_filter，避免 macvlan 回程包被丢
+# 5. IPv4 路由：有 IPRange 才拦 IPRange + metric；否则拦 Subnet 不抢 metric
+if [ -n "\$IPRANGE4_CIDR" ]; then
+  ip route replace "\$IPRANGE4_CIDR" dev "$bridge_if" metric 10
+else
+  ip route replace "\$SUBNET4_CIDR" dev "$bridge_if"
+fi
+
+# 6. IPv6 路由：不建议用 metric
+if [ -n "\$ROUTE6_PREF" ]; then
+  ip -6 route replace "\$ROUTE6_PREF" dev "$bridge_if"
+fi
+
+# 7. 内核参数调优
 sysctl -w "net.ipv4.conf.${bridge_if}.rp_filter=0" >/dev/null || true
 sysctl -w "net.ipv4.conf.${parent_if}.rp_filter=0" >/dev/null || true
-
-# 路由到 macvlan 网络（优先 IPRange，缺省 Subnet）
-ip route replace "$route4_cidr" dev "$bridge_if"
+sysctl -w "net.ipv4.conf.all.rp_filter=0" >/dev/null || true
 EOF
-
-    if [ -n "$route6_pref" ]; then
-        cat <<EOF | sudo tee -a "$setup_script" >/dev/null
-ip -6 route replace "$route6_pref" dev "$bridge_if"
-EOF
-    fi
 
     sudo chmod +x "$setup_script"
 
