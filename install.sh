@@ -1119,6 +1119,14 @@ create_macvlan_bridge() {
     echo "🧩 配置脚本: $setup_script"
     echo "🧩 systemd 服务: $service_name"
 
+    # —— 在写脚本之前：自动探测 mihomo 下一跳 ——
+    mihomo_ip="$(detect_mihomo_ip "$route4_cidr" "$network_info")"
+    if [ -n "$mihomo_ip" ]; then
+      echo "🔎 自动探测到 mihomo IP: $mihomo_ip"
+    else
+      echo "ℹ️ 未探测到 mihomo IP，将仅保留运行时 MIHOMO/mihomo 覆盖能力"
+    fi
+
     read -p "确认创建/更新以上 bridge？(y/n): " yn
     if [[ ! "$yn" =~ ^[Yy]$ ]]; then
         echo "⚠️ 已取消。"
@@ -1167,6 +1175,18 @@ if [ -n "\$IPRANGE4_CIDR" ]; then
   ip route replace "\$IPRANGE4_CIDR" dev "$bridge_if" metric 10
 else
   ip route replace "\$SUBNET4_CIDR" dev "$bridge_if"
+fi
+
+# 5.1 mihomo 专用路由（198.18.0.0/15）
+# 说明：宿主机 <-> macvlan 容器互通必须走 $bridge_if，不能走 $parent_if（eth0）
+if [ -n "$mihomo_ip" ]; then
+  ip route replace 198.18.0.0/15 via "$mihomo_ip" dev "$bridge_if" onlink 2>/dev/null || true
+fi
+
+# 运行时覆盖（支持 MIHOMO/mihomo 环境变量，优先级更高）
+MIHOMO_EFFECTIVE="${MIHOMO:-${mihomo:-}}"
+if [ -n "$MIHOMO_EFFECTIVE" ]; then
+  ip route replace 198.18.0.0/15 via "$MIHOMO_EFFECTIVE" dev "$bridge_if" onlink 2>/dev/null || true
 fi
 
 # 6. IPv6 路由：不建议用 metric
