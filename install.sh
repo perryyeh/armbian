@@ -1119,12 +1119,27 @@ create_macvlan_bridge() {
     echo "🧩 配置脚本: $setup_script"
     echo "🧩 systemd 服务: $service_name"
 
-    # —— 在写脚本之前：自动探测 mihomo 下一跳 ——
-    mihomo_ip="$(detect_mihomo_ip "$route4_cidr" "$network_info")"
-    if [ -n "$mihomo_ip" ]; then
-      echo "🔎 自动探测到 mihomo IP: $mihomo_ip"
-    else
-      echo "ℹ️ 未探测到 mihomo IP，将仅保留运行时 MIHOMO/mihomo 覆盖能力"
+    # —— 在写脚本之前：检测是否安装了 mihomo；若有则询问是否写入 198.18/15 路由 ——
+    mihomo_ip=""
+    ADD_MIHOMO_ROUTE=0
+
+    # 只要容器名中包含 mihomo（如 mihomo / mihomo-core / mihomo_next 等）
+    if docker ps -a --format '{{.Names}}' | grep -qi 'mihomo'; then
+      # 探测 mihomo IP（沿用你原来的探测逻辑）
+      mihomo_ip="$(detect_mihomo_ip "$route4_cidr" "$network_info")"
+
+      if [ -n "$mihomo_ip" ]; then
+        echo "🔎 检测到 mihomo 相关容器，探测到 IP: $mihomo_ip"
+        read -r -p "是否为 bridge 写入 mihomo 专用路由（198.18.0.0/15 -> $mihomo_ip）？(y/n，默认 n): " yn_mihomo
+        if [[ "$yn_mihomo" =~ ^[Yy]$ ]]; then
+          ADD_MIHOMO_ROUTE=1
+          echo "✅ 将写入 mihomo 路由。"
+        else
+          echo "ℹ️ 已选择不写入 mihomo 路由。"
+        fi
+      else
+        echo "ℹ️ 检测到 mihomo 相关容器，但未能探测到 IP，跳过创建时写入（仍保留运行时 MIHOMO/mihomo 覆盖能力）"
+      fi
     fi
 
     read -p "确认创建/更新以上 bridge？(y/n): " yn
@@ -1179,14 +1194,8 @@ fi
 
 # 5.1 mihomo 专用路由（198.18.0.0/15）
 # 说明：宿主机 <-> macvlan 容器互通必须走 $bridge_if，不能走 $parent_if（eth0）
-if [ -n "$mihomo_ip" ]; then
+if [ "${ADD_MIHOMO_ROUTE:-0}" -eq 1 ] && [ -n "$mihomo_ip" ]; then
   ip route replace 198.18.0.0/15 via "$mihomo_ip" dev "$bridge_if" onlink 2>/dev/null || true
-fi
-
-# 运行时覆盖（支持 MIHOMO/mihomo 环境变量，优先级更高）
-MIHOMO_EFFECTIVE="${MIHOMO:-${mihomo:-}}"
-if [ -n "$MIHOMO_EFFECTIVE" ]; then
-  ip route replace 198.18.0.0/15 via "$MIHOMO_EFFECTIVE" dev "$bridge_if" onlink 2>/dev/null || true
 fi
 
 # 6. IPv6 路由：不建议用 metric
