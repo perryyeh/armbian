@@ -1156,6 +1156,8 @@ SUBNET4_CIDR="$subnet4_cidr"
 IPRANGE4_CIDR="$iprange4_cidr"
 ROUTE6_PREF="$route6_pref"
 BRIDGE6_CIDR="$bridge6_cidr"
+ADD_MIHOMO_ROUTE="$ADD_MIHOMO_ROUTE"
+MIHOMO_IP="$mihomo_ip"
 
 # 1. 物理层清理与创建
 ip link del "$bridge_if" 2>/dev/null || true
@@ -1191,8 +1193,8 @@ fi
 
 # 5.1 mihomo 专用路由（198.18.0.0/15）
 # 说明：宿主机 <-> macvlan 容器互通必须走 $bridge_if，不能走 $parent_if（eth0）
-if [ "${ADD_MIHOMO_ROUTE:-0}" -eq 1 ] && [ -n "$mihomo_ip" ]; then
-  ip route replace 198.18.0.0/15 via "$mihomo_ip" dev "$bridge_if" onlink 2>/dev/null || true
+if [ "${ADD_MIHOMO_ROUTE:-0}" -eq 1 ] && [ -n "$MIHOMO_IP" ]; then
+  ip route replace 198.18.0.0/15 via "$MIHOMO_IP" dev "$bridge_if" onlink 2>/dev/null || true
 fi
 
 # 6. IPv6 路由：不建议用 metric
