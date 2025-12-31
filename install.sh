@@ -2,21 +2,55 @@
 
 # ========== 环境准备 ==========
 
-function install_dependencies() {
-    echo "🔧 检查并安装依赖..."
+install_dependencies() {
+    echo "🔧 检查并安装依赖（自动适配系统）..."
 
-    # 定义依赖列表
-    dependencies=(ipcalc curl jq git)
+    deps=(ipcalc curl jq git)
 
-    for dep in "${dependencies[@]}"; do
-        if ! dpkg -s $dep >/dev/null 2>&1; then
-            echo "🔍 依赖 $dep 未安装，开始安装..."
-            sudo apt-get update
-            sudo apt-get install -y $dep
-        else
-            echo "✅ 依赖 $dep 已安装，跳过"
+    # 统一检测函数
+    need_install() {
+        ! command -v "$1" >/dev/null 2>&1
+    }
+
+    # === 1️⃣ Debian / Ubuntu / Armbian ===
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "📦 使用 apt-get 安装依赖"
+        for dep in "${deps[@]}"; do
+            if need_install "$dep"; then
+                apt-get update
+                apt-get install -y "$dep"
+            else
+                echo "✅ $dep 已安装"
+            fi
+        done
+        return 0
+    fi
+
+    # === 2️⃣ 群晖 / 飞牛 OS（Entware）===
+    if [ -x /opt/bin/opkg ]; then
+        echo "📦 使用 Entware(opkg) 安装依赖"
+        export PATH=/opt/bin:$PATH
+
+        for dep in "${deps[@]}"; do
+            if need_install "$dep"; then
+                /opt/bin/opkg update
+                /opt/bin/opkg install "$dep"
+            else
+                echo "✅ $dep 已安装"
+            fi
+        done
+
+        # 兼容 Entware git 没 wrapper 的情况
+        if [ ! -x /opt/bin/git ] && [ -x /opt/lib/git-core/git ]; then
+            ln -sf /opt/lib/git-core/git /opt/bin/git
         fi
-    done
+        return 0
+    fi
+
+    # === 3️⃣ 兜底 ===
+    echo "❌ 未识别的系统，无法自动安装依赖"
+    echo "👉 请手动安装：${deps[*]}"
+    return 1
 }
 
 echo "⚠️ 请以 root 权限运行本脚本"
