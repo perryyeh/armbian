@@ -654,20 +654,21 @@ function install_docker() {
 }
 
 # ========== 1. 创建 macvlan 网络 ==========
-function create_macvlan_network() {
+create_macvlan_network() {
   echo "🔧 开始创建 macvlan 网络"
 
-    # 列出所有【可作为 parent 的物理网卡或其 VLAN 子接口】，过滤虚拟接口
-  interfaces=()
+  # 1) 列出所有可能作为 parent 的接口（不过滤 ovs/bridge；只排除明显不可用的）
+  local interfaces=()
   while IFS= read -r iface; do
     case "$iface" in
-      # 明确排除的虚拟/隧道/容器类接口
-      lo|docker0|docker*|br-*|virbr*|veth*|mvbr*|tun*|tap*|wg*|tailscale*|zt*|ifb*|dummy*|gre*|gretap*|ip6gre*|sit*|macvtap*)
+      # 明确排除：容器/隧道/虚拟/内核专用
+      lo|docker0|docker*|br-*|virbr*|veth*|mvbr*|tun*|tap*|wg*|tailscale*|zt*|ifb*|dummy*|gre*|gretap*|ip6gre*|sit*|macvtap*|kube*|cni*|flannel*|calico* )
         continue
         ;;
       *)
-        # 仅收集常见物理口及其 VLAN 子接口（允许 eth0.8 这类）
-        if [[ "$iface" =~ ^(e(n|th|np|ns|no|ni)|bond|team|wlan|wl|eno|ens|enp)([0-9a-zA-Z\.\-:]+)?$ ]]; then
+        # 放宽：允许 eth/ens/enp/eno/wlan/bond/team/br/ovs 等以及 VLAN 子接口 (xxx.88)
+        # 你飞牛/OVS 场景需要把 br0/ovs* 放进来
+        if [[ "$iface" =~ ^(e(n|th|np|ns|no|ni)|ens|enp|eno|eth|wlan|wl|bond|team|br|ovs)([0-9a-zA-Z\.\-:_]+)?$ ]]; then
           interfaces+=("$iface")
         fi
         ;;
@@ -675,50 +676,51 @@ function create_macvlan_network() {
   done < <(ls /sys/class/net)
 
   if [ ${#interfaces[@]} -eq 0 ]; then
-    echo "❌ 未找到可用的物理网卡。"
+    echo "❌ 未找到可用的网卡/接口。"
     return 1
   fi
 
-  echo "请选择【物理】网卡："
+  echo "请选择 parent 接口（可选物理口 / VLAN 子接口 / OVS bridge 口）："
+  local i ip4 ip6
   for i in "${!interfaces[@]}"; do
-    ip4=$(ip -4 addr show "${interfaces[$i]}" | awk '/ inet /{print $2}')
-    ip6=$(ip -6 addr show "${interfaces[$i]}" | awk '/ inet6 / && $2 ~ /^fd/{print $2}')
-    echo "$i) ${interfaces[$i]}  IPv4: ${ip4:-无}  IPv6: ${ip6:-无}"
+    ip4="$(ip -4 addr show "${interfaces[$i]}" 2>/dev/null | awk '/ inet /{print $2}' | head -n1)"
+    ip6="$(ip -6 addr show "${interfaces[$i]}" 2>/dev/null | awk '/ inet6 / && $2 ~ /^fd/{print $2}' | head -n1)"
+    echo "$i) ${interfaces[$i]}  IPv4: ${ip4:-无}  ULA: ${ip6:-无}"
   done
 
-  read -p "输入网卡序号: " netcard_index
-  # ✅ 校验输入是否为有效序号；无效则直接退出
+  local netcard_index networkcard
+  read -r -p "输入网卡序号: " netcard_index
   if ! [[ "$netcard_index" =~ ^[0-9]+$ ]] || [ "$netcard_index" -lt 0 ] || [ "$netcard_index" -ge "${#interfaces[@]}" ]; then
     echo "❌ 无效的网卡序号：$netcard_index"
     return 1
   fi
-
-  networkcard=${interfaces[$netcard_index]}
-
-  if [ -z "$networkcard" ]; then
-    echo "❌ 未能获取网卡名称（序号：$netcard_index）"
-    return 1
-  fi
-
-  echo "选择的网卡: $networkcard"
+  networkcard="${interfaces[$netcard_index]}"
+  [ -n "$networkcard" ] || { echo "❌ 未能获取网卡名称"; return 1; }
+  echo "选择的 parent 接口: $networkcard"
 
   # ========= VLAN 处理 =========
-  vlan_id=""
+  local vlan_id="" vlan_iface="" vlan_suffix="" parent_iface=""
   if [[ "$networkcard" != *.* ]]; then
-    read -p "是否为 macvlan 使用 VLAN ID？直接回车表示不使用，输入 VLAN ID（例如 88）: " vlan_id
+    read -r -p "是否为 macvlan 使用 VLAN ID？直接回车表示不使用，输入 VLAN ID（例如 88）: " vlan_id
     if [ -n "$vlan_id" ]; then
+      if ! [[ "$vlan_id" =~ ^[0-9]+$ ]] || [ "$vlan_id" -lt 1 ] || [ "$vlan_id" -gt 4094 ]; then
+        echo "❌ VLAN ID 无效：$vlan_id"
+        return 1
+      fi
+
       vlan_iface="${networkcard}.${vlan_id}"
-      echo "🔧 将使用带 VLAN 的接口: $vlan_iface (parent: $networkcard, VLAN ID: $vlan_id)"
+      echo "🔧 将使用 VLAN 子接口: $vlan_iface (parent: $networkcard, VLAN ID: $vlan_id)"
 
       if ! ip link show "$vlan_iface" >/dev/null 2>&1; then
-        sudo ip link add link "$networkcard" name "$vlan_iface" type vlan id "$vlan_id"
+        sudo ip link add link "$networkcard" name "$vlan_iface" type vlan id "$vlan_id" || {
+          echo "❌ 创建 VLAN 接口失败：$vlan_iface"
+          return 1
+        }
       fi
-      sudo ip link set "$vlan_iface" up
-
+      sudo ip link set "$vlan_iface" up || true
       networkcard="$vlan_iface"
     fi
   else
-    # 用户直接选的是 eth0.8 这种
     vlan_suffix="${networkcard#*.}"
     if [[ "$vlan_suffix" =~ ^[0-9]+$ ]]; then
       vlan_id="$vlan_suffix"
@@ -728,45 +730,38 @@ function create_macvlan_network() {
   # ========= VLAN 处理结束 =========
 
   # ========= IPv4：先网关，再算 CIDR & range =========
-  ip=$(ip -4 addr show "$networkcard" | grep -w inet | head -n1 | awk '{print $2}' | cut -d'/' -f1)
-
-  suggest_gateway=""
-  suggest_prefixlen=""
+  local ip="" gateway="" cidr="" iprange="" subnet4="" iprangev4="" suggest_gateway="" suggest_prefixlen="" prefixlen="" auto_cidr=""
+  ip="$(ip -4 addr show "$networkcard" 2>/dev/null | awk '/ inet /{print $2}' | head -n1 | cut -d'/' -f1)"
 
   if [ -n "$ip" ]; then
-    # 接口本身有 IP，直接用它的网关/前缀
-    cidr_from_iface=$(get_subnet_v4 "$ip" "$networkcard")
-    gw_from_iface=$(ip route | grep "^default" | grep "dev $networkcard" | awk '{print $3}')
+    # 接口本身有 IP：建议用该接口的前缀长度；网关优先取该接口路由到默认的下一跳
+    local cidr_from_iface gw_from_iface
+    cidr_from_iface="$(get_subnet_v4 "$ip" "$networkcard")"
+    gw_from_iface="$(ip -4 route show default 2>/dev/null | awk -v dev="$networkcard" '$0 ~ (" dev "dev" ") {print $3; exit}')"
+    [ -z "$gw_from_iface" ] && gw_from_iface="$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')"
     suggest_gateway="$gw_from_iface"
-    suggest_prefixlen="${cidr_from_iface#*/}"  # 例如 23 / 24
+    suggest_prefixlen="${cidr_from_iface#*/}"
   else
-    echo "⚠️ 未在接口 $networkcard 上检测到 IPv4 地址（VLAN 接口通常没有 IP）"
+    echo "⚠️ 未在接口 $networkcard 上检测到 IPv4 地址（VLAN/bridge 接口通常没有 IP）"
 
-    parent_iface=${networkcard%%.*}
-    parent_ip=$(ip -4 addr show "$parent_iface" | grep -w inet | head -n1 | awk '{print $2}' | cut -d'/' -f1)
+    parent_iface="${networkcard%%.*}"
+    local parent_ip parent_cidr parent_mask p1 p2 p3 p4 third_octet
+    parent_ip="$(ip -4 addr show "$parent_iface" 2>/dev/null | awk '/ inet /{print $2}' | head -n1 | cut -d'/' -f1)"
 
     if [ -n "$parent_ip" ]; then
-      parent_cidr=$(get_subnet_v4 "$parent_ip" "$parent_iface")
-      parent_net=${parent_cidr%/*}
-      parent_mask=${parent_cidr#*/}
+      parent_cidr="$(get_subnet_v4 "$parent_ip" "$parent_iface")"
+      parent_mask="${parent_cidr#*/}"
+      IFS='.' read -r p1 p2 p3 p4 <<< "${parent_cidr%/*}"
 
-      IFS='.' read -r p1 p2 p3 p4 <<< "$parent_net"
-
-      # 策略：沿用前两段，第三段用 VLAN ID（没有 VLAN 就用原来的）
       if [ -n "$vlan_id" ]; then
-        third_octet=$vlan_id
-      else
-        third_octet=$p3
-      fi
-
-      suggest_gateway="${p1}.${p2}.${third_octet}.1"
-      # VLAN 场景默认 /24；无 VLAN 就沿用原掩码
-      if [ -n "$vlan_id" ]; then
+        third_octet="$vlan_id"
         suggest_prefixlen="24"
       else
+        third_octet="$p3"
         suggest_prefixlen="$parent_mask"
       fi
 
+      suggest_gateway="${p1}.${p2}.${third_octet}.1"
       echo "👉 已根据 trunk 接口 $parent_iface 推算推荐 IPv4 网关：$suggest_gateway"
       echo "👉 推荐前缀长度：/$suggest_prefixlen"
     else
@@ -774,122 +769,89 @@ function create_macvlan_network() {
     fi
   fi
 
-  # 先确认 / 覆盖 IPv4 网关
   if [ -n "$suggest_gateway" ]; then
-    read -p "请输入 IPv4 网关 (回车使用推荐 $suggest_gateway): " input_gateway
-    if [ -n "$input_gateway" ]; then
-      gateway="$input_gateway"
-    else
-      gateway="$suggest_gateway"
-    fi
+    read -r -p "请输入 IPv4 网关 (回车使用推荐 $suggest_gateway): " gateway
+    [ -z "$gateway" ] && gateway="$suggest_gateway"
   else
-    read -p "请输入 IPv4 网关 (例如 10.88.0.1): " gateway
+    read -r -p "请输入 IPv4 网关 (例如 10.88.0.1): " gateway
   fi
 
-  if [ -z "$gateway" ]; then
-    echo "❌ IPv4 网关不能为空。"
-    return 1
-  fi
+  [ -n "$gateway" ] || { echo "❌ IPv4 网关不能为空。"; return 1; }
 
-  # 根据网关自动推算子网 CIDR（默认网关所在网段 .0/前缀）
-  gw_net_ip="${gateway%.*}.0"
   prefixlen="${suggest_prefixlen:-24}"
-  auto_cidr="${gw_net_ip}/${prefixlen}"
+  auto_cidr="${gateway%.*}.0/${prefixlen}"
 
-  echo "👉 已根据网关 $gateway 自动推算 IPv4 子网：$auto_cidr"
-  # 用户可再覆盖 IPv4 子网
-  echo "⚠️ 提示：IPRange 应为 macvlan 专用网段（建议 /24 或更小），不要与 DHCP 或其他服务器重叠。"
-  read -p "请输入 macvlan IPv4 子网CIDR (回车使用推荐 $auto_cidr): " input_cidr
-  if [ -n "$input_cidr" ]; then
-    cidr="$input_cidr"
-  else
-    cidr="$auto_cidr"
+  echo "👉 已根据网关 $gateway 推算 IPv4 子网：$auto_cidr"
+  echo "⚠️ 提示：IPRange 应为 macvlan 专用网段（建议 /24 或更小），不要与 DHCP/静态地址重叠。"
+  read -r -p "请输入 macvlan IPv4 子网CIDR (回车使用推荐 $auto_cidr): " cidr
+  [ -z "$cidr" ] && cidr="$auto_cidr"
+
+  read -r -p "请输入 macvlan IPv4 range, 回车使用 $cidr: " iprange
+  [ -z "$iprange" ] && iprange="$cidr"
+
+  iprangev4="$(echo "$iprange" | cut -d'/' -f1)"
+  subnet4="$(echo "$iprange" | cut -d'/' -f2)"
+
+  # ========= IPv6：更稳的收敛逻辑 =========
+  local gateway6="" cidr6="" iprange6="" subnet6="" iprangev6_prefix="" suggest_gateway6="" suggest_cidr6="" auto_cidr6=""
+  # 优先：从接口/父接口拿到 ULA 前缀（fdxx）
+  local ip6_cidr ip6_addr prefix_len6 ula_prefix
+
+  ip6_cidr="$(ip -6 addr show "$networkcard" 2>/dev/null | awk '/ inet6 / && $2 ~ /^fd/{print $2; exit}')"
+  if [ -z "$ip6_cidr" ]; then
+    parent_iface="${networkcard%%.*}"
+    ip6_cidr="$(ip -6 addr show "$parent_iface" 2>/dev/null | awk '/ inet6 / && $2 ~ /^fd/{print $2; exit}')"
   fi
 
-  # IPv4 range 默认等于子网
-  read -p "请输入 macvlan IPv4 range, 回车使用 $cidr: " iprange
-  [ -z "$iprange" ] && iprange=$cidr
-  iprangev4=$(echo "$iprange" | cut -d'/' -f1)
-  subnet4=$(echo "$iprange" | cut -d'/' -f2)
-
-  # ========= IPv6：同样先网关，再算 CIDR & range =========
-  suggest_gateway6=""
-  suggest_cidr6=""
-
-  # 优先从接口现有 IPv6 计算
-  ip6_info=$(ip -6 addr show "$networkcard" | grep -w inet6 | grep fd | head -n1 || true)
-  if [ -n "$ip6_info" ]; then
-    ip6_cidr=$(echo "$ip6_info" | awk '{print $2}')
-    ip6=$(echo "$ip6_cidr" | cut -d'/' -f1)
-    prefix_len6=$(echo "$ip6_cidr" | cut -d'/' -f2)
-    ip6_prefix=$(echo "$ip6" | cut -d':' -f1-4)
-    suggest_cidr6="${ip6_prefix}::/${prefix_len6}"
-    suggest_gateway6="${ip6_prefix}::1"
+  if [ -n "$ip6_cidr" ]; then
+    ip6_addr="${ip6_cidr%/*}"
+    prefix_len6="${ip6_cidr#*/}"
+    # 取前 4 段作为稳定 ULA /64 前缀（fd10:86:20:xx）
+    ula_prefix="$(echo "$ip6_addr" | awk -F: '{print $1":"$2":"$3":"$4}')"
+    suggest_cidr6="${ula_prefix}::/64"
+    suggest_gateway6="${ula_prefix}::1"
   else
-    # 没有现成 IPv6，就按你的原逻辑，用 IPv4 网关推一个 ULA 前缀（fdxx:...）
+    # 没有现成 ULA：退回你原来的“IPv4->ULA 前缀”方案（但只作为建议）
     if [ -n "$gateway" ]; then
-      prefix6=$(ipv4_to_ipv6_prefix "$gateway")
+      local prefix6
+      prefix6="$(ipv4_to_ipv6_prefix "$gateway")"
       suggest_cidr6="${prefix6}::/64"
       suggest_gateway6="${prefix6}::1"
     fi
   fi
 
-  # 先让用户确认 / 覆盖 IPv6 网关
   if [ -n "$suggest_gateway6" ]; then
     echo "检测到/推算 IPv6 Gateway: $suggest_gateway6"
-    read -p "请输入 IPv6 网关 (回车使用推荐 $suggest_gateway6，留空表示不启用IPv6): " input_gateway6
-    if [ -n "$input_gateway6" ]; then
-      gateway6="$input_gateway6"
-    else
-      gateway6="$suggest_gateway6"
-    fi
+    read -r -p "请输入 IPv6 网关 (回车使用推荐 $suggest_gateway6，留空表示不启用IPv6): " gateway6
+    [ -z "$gateway6" ] && gateway6="$suggest_gateway6"
   else
-    read -p "请输入 IPv6 网关 (例如 fd10:86:28::1，留空表示不启用IPv6): " gateway6
+    read -r -p "请输入 IPv6 网关 (例如 fd10:86:28:2::1，留空表示不启用IPv6): " gateway6
   fi
 
-  # 如果用户留空 IPv6 网关，则不配置 IPv6
   if [ -z "$gateway6" ]; then
-    cidr6=""
-    iprange6=""
-    subnet6=""
-    iprangev6_prefix=""
+    cidr6=""; iprange6=""; subnet6=""; iprangev6_prefix=""
   else
-    # 基于当前网关6和已有前缀建议，推一个 CIDR
-    if [ -n "$suggest_cidr6" ]; then
-      auto_cidr6="$suggest_cidr6"
-    else
-      # 没有任何前缀建议时，简单取 IPv4 对应前缀 + /64
-      prefix6=$(ipv4_to_ipv6_prefix "$gateway")
-      auto_cidr6="${prefix6}::/64"
-    fi
+    auto_cidr6="${suggest_cidr6:-$(ipv4_to_ipv6_prefix "$gateway")::/64}"
+    echo "👉 已根据 IPv6 网关 $gateway6 推算 IPv6 子网：$auto_cidr6"
+    echo "⚠️ 提示：IPv6 IPRange 建议 /64（不要与现网 RA/DHCPv6 冲突）。"
+    read -r -p "请输入 IPv6 子网CIDR (回车使用推荐 $auto_cidr6): " cidr6
+    [ -z "$cidr6" ] && cidr6="$auto_cidr6"
 
-    echo "👉 已根据 IPv6 网关 $gateway6 自动/推算 IPv6 子网：$auto_cidr6"
-    echo "⚠️ 提示：IPRange 应为 macvlan 专用网段（建议 /64 或更小），不要与 DHCP 或其他服务器重叠。"
-    read -p "请输入 IPv6 子网CIDR (回车使用推荐 $auto_cidr6): " input_cidr6
-    if [ -n "$input_cidr6" ]; then
-      cidr6="$input_cidr6"
-    else
-      cidr6="$auto_cidr6"
-    fi
+    read -r -p "请输入 macvlan IPv6 range, 回车使用 $cidr6: " iprange6
+    [ -z "$iprange6" ] && iprange6="$cidr6"
 
-    read -p "请输入 macvlan IPv6 range, 回车使用 $cidr6: " iprange6
-    [ -z "$iprange6" ] && iprange6=$cidr6
-    subnet6=$(echo "$iprange6" | cut -d'/' -f2)
-    iprangev6_prefix=$(echo "$iprange6" | cut -d'/' -f1)
-    iprangev6_prefix=$(echo "$iprangev6_prefix" | rev | cut -d':' -f2- | rev):
+    subnet6="$(echo "$iprange6" | cut -d'/' -f2)"
+    iprangev6_prefix="$(echo "$iprange6" | cut -d'/' -f1)"
   fi
 
   # ========== 根据物理网卡 + VLAN ID 生成 macvlan 网络名称 ==========
-  # 物理网卡（去掉 VLAN 后缀）
-  raw_phys="${networkcard%%.*}"        # eth0.8 → eth0
-  # 安全处理（避免点号/异常字符）
-  safe_phys=$(echo "$raw_phys" | sed 's/[^a-zA-Z0-9_-]/_/g')
+  local raw_phys safe_phys network_name
+  raw_phys="${networkcard%%.*}"
+  safe_phys="$(echo "$raw_phys" | sed 's/[^a-zA-Z0-9_-]/_/g')"
 
   if [ -n "$vlan_id" ]; then
-    # eg: macvlan_eth0_88
     network_name="macvlan_${safe_phys}_${vlan_id}"
   else
-    # eg: macvlan_eth0
     network_name="macvlan_${safe_phys}"
   fi
 
@@ -909,21 +871,22 @@ function create_macvlan_network() {
   fi
   echo "网络名称：$network_name"
 
-  read -p "是否正确？(y/n): " confirm
+  local confirm
+  read -r -p "是否正确？(y/n): " confirm
   if [ "$confirm" != "y" ]; then
     echo "退出 macvlan 创建。"
     return 1
   fi
 
   # 启用 promiscuous mode
-  sudo ip link set "$networkcard" promisc on
+  sudo ip link set "$networkcard" promisc on || true
 
   # 创建 docker macvlan 网络
   echo "🔨 正在创建 docker macvlan 网络：$network_name ..."
   if [ -n "$gateway6" ] && [ -n "$cidr6" ]; then
     docker network create -d macvlan \
-      --subnet="$cidr" --ip-range="$iprange" --gateway="$gateway" \
-      --ipv6 --subnet="$cidr6" --gateway="$gateway6" \
+      --subnet="$cidr"  --ip-range="$iprange"  --gateway="$gateway" \
+      --ipv6 --subnet="$cidr6" --ip-range="$iprange6" --gateway="$gateway6" \
       -o parent="$networkcard" "$network_name"
   else
     docker network create -d macvlan \
