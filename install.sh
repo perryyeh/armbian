@@ -1227,8 +1227,14 @@ WantedBy=multi-user.target
 EOF
 
     # 6. 启用并立即执行
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now "$service_name"
+    sudo systemctl daemon-reload 2>/dev/null || true
+    sudo systemctl enable "$service_name" 2>/dev/null || true
+
+    # 群晖 systemctl 可能无法 start，兜底直接执行一次脚本
+    if ! sudo systemctl start "$service_name" 2>/dev/null; then
+        echo "⚠️ systemctl start 不可用，直接执行 bridge 脚本"
+        sudo "$setup_script" || return 1
+    fi
 
     echo "✅ 已为 macvlan 网络 $macvlan_name 创建/更新 bridge 接口: $bridge_if"
     echo "   IPv4: $bridge4_cidr"
