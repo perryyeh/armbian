@@ -1160,19 +1160,6 @@ create_macvlan_bridge() {
       fi
     fi
 
-    # 2. 如果没选 Mihomo (或没找到)，允许手动输入
-    if [ -z "$FAKE_IP_GW" ]; then
-      read -r -p "是否需要将 198.18.0.0/15 路由指向特定 IP (例如外部旁路由)？请输入 IP (回车跳过): " custom_gw
-      if [ -n "$custom_gw" ]; then
-        # 简单校验 IP 格式
-        if [[ "$custom_gw" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-          FAKE_IP_GW="$custom_gw"
-        else
-          echo "⚠️ 输入的 IP 格式看似无效，已忽略: $custom_gw"
-        fi
-      fi
-    fi
-
     if [ -n "$FAKE_IP_GW" ]; then
       echo "✅ 将写入路由规则: 198.18.0.0/15 via $FAKE_IP_GW"
     else
