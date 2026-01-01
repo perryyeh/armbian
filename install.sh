@@ -166,9 +166,25 @@ get_subnet_v4() {
   local ip=$1
   local iface=$2
   local cidr=$(ip route | grep -v "^default" | grep "$iface" | grep "$ip" | awk '{print $1}')
+  
   if [ -z "$cidr" ]; then
-    local netmask=$(ip -4 addr show $iface | grep inet | awk '{print $2}' | cut -d'/' -f2)
-    cidr=$(ipcalc -n $ip/$netmask | grep Network | awk '{print $2}')
+    local prefix_len=$(ip -4 addr show $iface | grep inet | awk '{print $2}' | cut -d'/' -f2)
+    local ipcalc_out
+    # 移除 -n 选项以提高兼容性（Busybox ipcalc 可能不支持，或者输出不同）
+    ipcalc_out=$(ipcalc "$ip/$prefix_len" 2>/dev/null)
+
+    # 1. 尝试 Debian 格式 (Network: 192.168.1.0/24)
+    cidr=$(echo "$ipcalc_out" | grep "Network:" | awk '{print $2}')
+
+    # 2. 尝试 Busybox/Entware 格式 (NETWORK=192.168.1.0 + PREFIX=24)
+    if [ -z "$cidr" ]; then
+      local net_val prefix_val
+      net_val=$(echo "$ipcalc_out" | grep "NETWORK=" | cut -d= -f2)
+      prefix_val=$(echo "$ipcalc_out" | grep "PREFIX=" | cut -d= -f2)
+      if [ -n "$net_val" ] && [ -n "$prefix_val" ]; then
+        cidr="${net_val}/${prefix_val}"
+      fi
+    fi
   fi
   echo $cidr
 }
@@ -696,7 +712,7 @@ create_macvlan_network() {
   while IFS= read -r iface; do
     case "$iface" in
       # 明确排除：容器/隧道/虚拟/内核专用
-      lo|docker0|docker*|br-*|virbr*|veth*|mvbr*|tun*|tap*|wg*|tailscale*|zt*|ifb*|dummy*|gre*|gretap*|ip6gre*|sit*|macvtap*|kube*|cni*|flannel*|calico* )
+      lo|docker0|docker*|br-*|virbr*|veth*|mvbr*|tun*|tap*|wg*|tailscale*|zt*|ifb*|dummy*|gre*|gretap*|ip6gre*|sit*|macvtap*|kube*|cni*|flannel*|calico*|ovs-system* )
         continue
         ;;
       *)
