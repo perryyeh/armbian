@@ -15,14 +15,20 @@ install_dependencies() {
     # === 1️⃣ Debian / Ubuntu / Armbian ===
     if command -v apt-get >/dev/null 2>&1; then
         echo "📦 使用 apt-get 安装依赖"
+        local to_install=()
         for dep in "${deps[@]}"; do
             if need_install "$dep"; then
-                apt-get update
-                apt-get install -y "$dep"
+                to_install+=("$dep")
             else
                 echo "✅ $dep 已安装"
             fi
         done
+
+        if [ ${#to_install[@]} -gt 0 ]; then
+            echo "⬇️ 正在安装缺少的依赖: ${to_install[*]}"
+            apt-get update
+            apt-get install -y "${to_install[@]}"
+        fi
         return 0
     fi
 
@@ -31,14 +37,20 @@ install_dependencies() {
         echo "📦 使用 Entware(opkg) 安装依赖"
         export PATH=/opt/bin:$PATH
 
+        local to_install=()
         for dep in "${deps[@]}"; do
             if need_install "$dep"; then
-                /opt/bin/opkg update
-                /opt/bin/opkg install "$dep"
+                to_install+=("$dep")
             else
                 echo "✅ $dep 已安装"
             fi
         done
+        
+        if [ ${#to_install[@]} -gt 0 ]; then
+             echo "⬇️ 正在安装缺少的依赖: ${to_install[*]}"
+            /opt/bin/opkg update
+            /opt/bin/opkg install "${to_install[@]}"
+        fi
 
         # 兼容 Entware git 没 wrapper 的情况
         if [ ! -x /opt/bin/git ] && [ -x /opt/lib/git-core/git ]; then
