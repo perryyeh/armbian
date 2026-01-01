@@ -1232,6 +1232,7 @@ fi
 sysctl -w "net.ipv4.conf.${bridge_if}.rp_filter=0" >/dev/null || true
 sysctl -w "net.ipv4.conf.${parent_if}.rp_filter=0" >/dev/null || true
 sysctl -w "net.ipv4.conf.all.rp_filter=0" >/dev/null || true
+sysctl -w "net.ipv4.conf.default.rp_filter=0" >/dev/null || true
 EOF
 
     sudo chmod +x "$setup_script"
