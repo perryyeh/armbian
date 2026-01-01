@@ -1144,27 +1144,39 @@ create_macvlan_bridge() {
     echo "🧩 配置脚本: $setup_script"
     echo "🧩 systemd 服务: $service_name"
 
-    # —— 在写脚本之前：检测是否安装了 mihomo；若有则询问是否写入 198.18/15 路由 ——
+    # —— 在写脚本之前：检测是否安装了 mihomo；若有则询问，否则询问是否指向其他 IP ——
     mihomo_ip=""
-    ADD_MIHOMO_ROUTE=0
+    FAKE_IP_GW=""
 
-    # 只要容器名中包含 mihomo（如 mihomo / mihomo-core / mihomo_next 等）
+    # 1. 尝试探测 Mihomo IP
     if docker ps -a --format '{{.Names}}' | grep -qi 'mihomo'; then
-      # 探测 mihomo IP（沿用你原来的探测逻辑）
       mihomo_ip="$(detect_mihomo_ip "$route4_cidr" "$network_info")"
-
       if [ -n "$mihomo_ip" ]; then
         echo "🔎 检测到 mihomo 相关容器，探测到 IP: $mihomo_ip"
-        read -r -p "是否为 bridge 写入 mihomo 专用路由（198.18.0.0/15 -> $mihomo_ip）？(y/n，默认 n): " yn_mihomo
+        read -r -p "是否将 198.18.0.0/15 路由指向 mihomo ($mihomo_ip)？(y/n，默认 n): " yn_mihomo
         if [[ "$yn_mihomo" =~ ^[Yy]$ ]]; then
-          ADD_MIHOMO_ROUTE=1
-          echo "✅ 将写入 mihomo 路由。"
-        else
-          echo "ℹ️ 已选择不写入 mihomo 路由。"
+          FAKE_IP_GW="$mihomo_ip"
         fi
-      else
-        echo "ℹ️ 检测到 mihomo 相关容器，但未能探测到 IP，跳过创建时写入（仍保留运行时 MIHOMO/mihomo 覆盖能力）"
       fi
+    fi
+
+    # 2. 如果没选 Mihomo (或没找到)，允许手动输入
+    if [ -z "$FAKE_IP_GW" ]; then
+      read -r -p "是否需要将 198.18.0.0/15 路由指向特定 IP (例如外部旁路由)？请输入 IP (回车跳过): " custom_gw
+      if [ -n "$custom_gw" ]; then
+        # 简单校验 IP 格式
+        if [[ "$custom_gw" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          FAKE_IP_GW="$custom_gw"
+        else
+          echo "⚠️ 输入的 IP 格式看似无效，已忽略: $custom_gw"
+        fi
+      fi
+    fi
+
+    if [ -n "$FAKE_IP_GW" ]; then
+      echo "✅ 将写入路由规则: 198.18.0.0/15 via $FAKE_IP_GW"
+    else
+      echo "ℹ️ 不写入 198.18.0.0/15 的静态路由。"
     fi
 
     read -p "确认创建/更新以上 bridge？(y/n): " yn
@@ -1184,7 +1196,7 @@ SUBNET4_CIDR="$subnet4_cidr"
 IPRANGE4_CIDR="$iprange4_cidr"
 ROUTE6_PREF="$route6_pref"
 BRIDGE6_CIDR="$bridge6_cidr"
-ADD_MIHOMO_ROUTE="$ADD_MIHOMO_ROUTE"
+FAKE_IP_GW="$FAKE_IP_GW"
 MIHOMO_IP="$mihomo_ip"
 
 # 1. 物理层清理与创建
@@ -1219,10 +1231,9 @@ else
   ip route replace "\$SUBNET4_CIDR" dev "$bridge_if"
 fi
 
-# 5.1 mihomo 专用路由（198.18.0.0/15）
-# 只有 mihomo 承载 198.18/15 时才写；否则不要插手 198.18（走默认网关即可）
-if [ "${ADD_MIHOMO_ROUTE:-0}" -eq 1 ] && [ -n "$MIHOMO_IP" ]; then
-  ip route replace 198.18.0.0/15 via "$MIHOMO_IP" dev "$bridge_if" onlink 2>/dev/null || true
+# 5.1 198.18.0.0/15 专用路由
+if [ -n "\$FAKE_IP_GW" ]; then
+  ip route replace 198.18.0.0/15 via "\$FAKE_IP_GW" dev "$bridge_if" onlink 2>/dev/null || true
 fi
 
 # 6. IPv6 路由：不建议用 metric
@@ -2412,7 +2423,3 @@ while true; do
         *) echo "无效选项，请重新输入。" ;;
     esac
 done
-
-
-
-
