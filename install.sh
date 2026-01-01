@@ -1218,7 +1218,10 @@ else
   ip route replace "\$SUBNET4_CIDR" dev "$bridge_if"
 fi
 
-# 5.1 198.18.0.0/15 专用路由
+# 5.1 198.18.0.0/15（Fake-IP / 代理入口）说明 & 防踩坑
+#
+# ⚠️ 如果 198.18.x.x 由 Mac mini + surge 承载，Mac mini网卡上dns设为自动，不能指定为路由器网关
+#
 if [ -n "\$FAKE_IP_GW" ]; then
   ip route replace 198.18.0.0/15 via "\$FAKE_IP_GW" dev "$bridge_if" onlink 2>/dev/null || true
 fi
