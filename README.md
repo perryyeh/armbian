@@ -1,15 +1,19 @@
 # Armbian 旁路由脚本 
 
-此项目提供快捷脚本，在类Armbian系统中创建 Docker macvlan 网络，并配置宿主机与容器之间的macvlan bridge互通，安装mosdns、adguard、mihomo等容器，实现域名解析、分流、缓存，被分流后的域名须采用fake-ip方案。
+此项目提供快捷脚本，用于在类Armbian系统中创建Docker macvlan网络，并配置宿主机与容器之间的macvlan bridge互通。
+
+核心容器是mosdns和adguardhome， mosdns提供域名分流（分流后的外部域名采用FakeIP方案），adguardhome提供缓存。
+
+本代码已在群晖7.3+（可能需要补全欠缺的命令），飞牛1.0+，armbian（linux6.1+） 上测试通过。
 
 使用到的核心仓库如下：
-https://github.com/IrineSistiana/mosdns
-https://github.com/AdguardTeam/AdGuardHome
+- https://github.com/IrineSistiana/mosdns
+- https://github.com/AdguardTeam/AdGuardHome
 
-docker镜像如下：
-https://hub.docker.com/r/irinesistiana/mosdns
-https://hub.docker.com/r/adguard/adguardhome
-https://hub.docker.com/r/metacubex/mihomo
+使用到的docker镜像如下：
+- https://hub.docker.com/r/irinesistiana/mosdns
+- https://hub.docker.com/r/adguard/adguardhome
+- https://hub.docker.com/r/metacubex/mihomo
 
 ---
 ## ✨ 功能特性
@@ -93,9 +97,8 @@ git
 
 ## 📌 注意事项
 - 默认使用ipv4计算容器的mac地址，mac地址格式类似02:*:86
-- 默认使用ipv4算ipv6 ula地址，生成类似fd10:: fd19:: fd17:: 作为 IPv6 网段，如不默认则需手工输入ipv6 ula
+- 默认使用ipv4计算ipv6 ula地址，生成fd10::（对应10.0.0.0/8）、fd17::（对应172.16.0.0/12）、fd19::（对应192.168.0.0/16）作为 IPv6 网段，如不默认则需手工输入ipv6 ula
 - 安装macvlan bridge错误请回滚操作，以免流量死循环导致无法进入而重新刷机
-- 本代码目前群晖7.3+（需补充缺失命令）、飞牛1.0+、armbian6.1+下测试通过，其他linux请自行尝试，有报错请反馈或用ai辅助解决
 
 
 ## 📜 License
