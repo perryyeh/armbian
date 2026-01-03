@@ -2,7 +2,7 @@
 
 此项目提供快捷脚本，用于在类Armbian系统中创建Docker macvlan网络，并配置宿主机与容器之间的macvlan bridge互通。
 
-核心容器是mosdns和adguardhome， mosdns提供域名分流（分流后的外部域名采用FakeIP方案），adguardhome提供缓存。
+核心容器是mosdns和adguardhome， mosdns提供域名分流（分流后的外部域名采用FakeIP方案），adguardhome提供域名缓存。
 
 本代码已在群晖7.3+（可能需要补全欠缺的命令），飞牛1.0+，armbian（linux6.1+） 上测试通过。
 
@@ -79,13 +79,13 @@ chmod +x install.sh
 1. 确立docker容器安装目录，硬盘没有格式化&加载的先格式化&加载
 2. 没有docker的先安装docker（群晖和飞牛有，直接跳过）
 3. 群晖和飞牛的网卡建议先开open vSwitch
-4. 选择网卡（群晖和飞牛建议选ovs开头网卡），创建macvlan
-5. 没有surge/openwrt当代理的，可以安装mihomo替代，mihomo需开tun模式并配置好上游代理。
-6. 路由器里配置静态路由，198.18.0.0/15下一跳到surge/mihomo的ip。
-7. 核心容器是mosdns和adguardhome，mosdns提供域名分流，adguardhome提供缓存。先安装mosdns，再安装adguardhome。
-8. mosdns选surge当上游时候，dns写198.18.0.2；选mihomo当上游时，dns写mihomo的ip。
-9. adguardhome用mosdns当上游，dns写mosdns的ip。
-10. 最后创建macvlan bridge，解决宿主机和容器的互通。
+4. 确立专有ip段给macvlan使用，ipv4建议给一个新的/24段（或现有ipv4的开头/结尾），ipv6 ula建议给/64段，在路由器上设置dhcp时候避开这段不分配
+5. 选择网卡（群晖和飞牛建议选ovs开头网卡），创建macvlan
+6. 没有surge/openwrt当代理的，可安装mihomo替代，mihomo需开tun模式并配置好上游代理。
+7. 路由器里配置静态路由，198.18.0.0/15下一跳到surge/mihomo的ip。
+8. 安装mosdns，选surge当上游时dns写198.18.0.2；选mihomo当上游时，dns写mihomo的ip。
+9. 安装adguardhome，用mosdns当上游，dns写mosdns的ip。
+10. 最后创建macvlan bridge，解决宿主机和容器之间的互通。
 
 ## 📦 依赖项
 脚本依赖以下工具，会自动安装：
@@ -97,7 +97,7 @@ git
 
 ## 📌 注意事项
 - 默认使用ipv4计算容器的mac地址，mac地址格式类似02:*:86
-- 默认使用ipv4计算ipv6 ula地址，生成fd10::（对应10.0.0.0/8）、fd17::（对应172.16.0.0/12）、fd19::（对应192.168.0.0/16）作为 IPv6 网段，如不默认则需手工输入ipv6 ula
+- 默认使用ipv4计算ipv6 ula地址（⚠️这不符合RFC4193，想合规可自定义ipv6 ula手工输入），生成fd10::/64（对应10.0.0.0/8）、fd17::/64（对应172.16.0.0/12）、fd19::/64（对应192.168.0.0/16）作为 IPv6 网段，如不默认则需手工输入ipv6 ula
 - 安装macvlan bridge错误请回滚操作，以免流量死循环导致无法进入而重新刷机
 
 
