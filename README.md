@@ -1,6 +1,15 @@
 # Armbian 旁路由脚本 
 
-此项目提供一个自动化脚本，用于在Armbian系统中自动创建 Docker macvlan 网络，并配置宿主机与容器之间的互通，安装librespeed测速，mihomo，mosdns，adguard等基础容器。
+此项目提供快捷脚本，在类Armbian系统中创建 Docker macvlan 网络，并配置宿主机与容器之间的macvlan bridge互通，安装mosdns、adguard、mihomo等容器，实现域名解析、分流、缓存，被分流后的域名须采用fake-ip方案。
+
+使用到的核心仓库如下：
+https://github.com/IrineSistiana/mosdns
+https://github.com/AdguardTeam/AdGuardHome
+
+docker镜像如下：
+https://hub.docker.com/r/irinesistiana/mosdns
+https://hub.docker.com/r/adguard/adguardhome
+https://hub.docker.com/r/metacubex/mihomo
 
 ---
 ## ✨ 功能特性
@@ -61,7 +70,17 @@ chmod +x install.sh
 ./install.sh
 ```
 
-按照交互提示操作即可。
+### 3. 安装步骤
+
+1. 确立docker容器安装目录，硬盘没有格式化&加载的先格式化&加载
+2. 没有docker的先安装docker（群晖和飞牛有，直接跳过）
+3. 群晖和飞牛的网卡建议先开open vSwitch
+4. 选择网卡（群晖和飞牛建议选ovs开头网卡），创建macvlan
+5. 没有surge/openwrt当代理的，可以安装mihomo替代（此处可用其他喜欢的替代），mihomo需开tun模式。
+6. 核心必选容器是mosdns和adguardhome，其他可选。思路是mosdns提供域名分流，adguardhome承担缓存。先安装mosdns，再安装adguardhome。
+7. mosdns选surge当上游时候，dns写198.18.0.2。选mihomo当上游时，dns写mihomo的ip。
+8. adguardhome用mosdns当上游时，dns写mosdns的ip。
+9. 最后创建macvlan bridge，解决宿主机和容器的互通。
 
 ## 📦 依赖项
 脚本依赖以下工具，会自动安装：
@@ -72,9 +91,9 @@ git
 
 
 ## 📌 注意事项
-- 脚本默认使用ipv4计算出ula ipv6地址，生成类似fd10:: fd19:: fd17:: 作为 IPv6 网段，如不用默认获取请一定要输入
+- 脚本默认使用ipv4计算出ula ipv6地址，生成类似fd10:: fd19:: fd17:: 作为 IPv6 网段，如不用默认获取请一定要手工输入
 - 安装macvlan bridge错误请回滚操作，以免流量死循环导致无法进入而重新刷机
-- 本代码目前群晖7.3+（群晖需要补充缺失命令）和armbian 6.1+下测试通过，其他linux请自行尝试
+- 本代码目前群晖7.3+（需要补充缺失命令）、飞牛1.0+、armbian 6.1+下测试通过，其他linux请自行尝试，有报错请反馈或用ai辅助解决
 
 
 ## 📜 License
