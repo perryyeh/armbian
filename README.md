@@ -77,10 +77,10 @@ chmod +x install.sh
 ### 3. 安装步骤
 
 1. 确立docker容器安装目录，硬盘没有格式化&加载的先格式化&加载
-2. 没有docker的先安装docker（群晖和飞牛有，直接跳过）
+2. 没docker的先安装docker（群晖和飞牛已有，直接跳过）
 3. 群晖和飞牛的网卡建议先开open vSwitch
 4. 确立专有ip段给macvlan使用，ipv4建议给一个新的/24段（或现有ipv4的开头/结尾），ipv6 ula建议给/64段，在路由器上设置dhcp时候避开这段不分配
-5. 选择网卡（群晖和飞牛建议选ovs开头网卡），创建macvlan
+5. 选择网卡（群晖和飞牛建议选ovs开头网卡）创建macvlan
 6. 没有surge/openwrt当代理的，可安装mihomo替代，mihomo需开tun模式并配置好上游代理。
 7. 路由器里配置静态路由，198.18.0.0/15下一跳到surge/mihomo的ip。
 8. 安装mosdns，选surge当上游时dns写198.18.0.2；选mihomo当上游时，dns写mihomo的ip。
