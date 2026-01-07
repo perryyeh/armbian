@@ -6,15 +6,6 @@
 
 本代码已在群晖7.3+（可能需要补全欠缺的命令），飞牛1.0+，armbian（linux6.1+） 上测试通过。
 
-使用到的核心仓库如下：
-- https://github.com/IrineSistiana/mosdns
-- https://github.com/AdguardTeam/AdGuardHome
-
-使用到的docker镜像如下：
-- https://hub.docker.com/r/irinesistiana/mosdns
-- https://hub.docker.com/r/adguard/adguardhome
-- https://hub.docker.com/r/metacubex/mihomo
-
 ---
 ## ✨ 功能特性
 - 交互式选择网卡并确认 IP / 网关 / 子网配置
@@ -88,11 +79,7 @@ chmod +x install.sh
 10. 最后创建macvlan bridge，解决宿主机和容器之间的互通。
 
 ## 📦 依赖项
-脚本依赖以下工具，会自动安装：
-ipcalc 
-curl 
-jq 
-git
+
 
 
 ## 📌 注意事项
@@ -100,6 +87,14 @@ git
 - 默认使用ipv4计算ipv6 ula地址（⚠️这不符合RFC4193，想合规可手工输入合规的ipv6 ula），生成fd10::/64（对应10.0.0.0/8）、fd17::/64（对应172.16.0.0/12）、fd19::/64（对应192.168.0.0/16）作为 IPv6 网段，如不默认则一定要手工输入ipv6 ula
 - 安装macvlan bridge错误请回滚操作，以免流量死循环导致无法进入而重新刷机
 
+## 依赖：
+- 脚本会自动安装依赖的命令： ipcalc curl jq git
+- https://github.com/perryyeh/mosdns
+- https://github.com/perryyeh/adguardhome
+
+## 参考文献：
+- https://github.com/IrineSistiana/mosdns
+- https://github.com/AdguardTeam/AdGuardHome
 
 ## 📜 License
-MIT License © 2025
+MIT License © 2026

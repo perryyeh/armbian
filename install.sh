@@ -136,7 +136,7 @@ select_macvlan_or_exit() {
 # 计算IP地址对应MAC地址
 ip_to_mac() {
   # IPv4 -> MAC: 02:<ip1hex>:<ip2hex>:<ip3hex>:<ip4hex>:86
-  # 例：10.86.20.254 -> 02:0a:56:14:fe:86
+  # 例：10.0.10.254 -> 02:0a:56:14:fe:86
   local ip1 ip2 ip3 ip4
   IFS='.' read -r ip1 ip2 ip3 ip4 <<< "$1"
 
@@ -305,7 +305,7 @@ calculate_ip_mac() {
 }
 
 # ---- 自动探测 mihomo 下一跳 IP（返回一个 IPv4 或空串）----
-# 参数1: route4_cidr（如 10.86.21.0/24 或 /23）
+# 参数1: route4_cidr（如 10.0.1.0/24）
 # 参数2: network_info（docker network inspect 的 JSON 字符串）
 detect_mihomo_ip() {
   local _route4="$1" _netinfo="$2"
@@ -868,7 +868,7 @@ create_macvlan_network() {
   if [ -n "$ip6_cidr" ]; then
     ip6_addr="${ip6_cidr%/*}"
     prefix_len6="${ip6_cidr#*/}"
-    # 取前 4 段作为稳定 ULA /64 前缀（fd10:86:20:xx）
+    # 取前 4 段作为稳定 ULA /64 前缀（fd10:0:1:xx）
     ula_prefix="$(echo "$ip6_addr" | awk -F: '{print $1":"$2":"$3":"$4}')"
     suggest_cidr6="${ula_prefix}::/64"
     suggest_gateway6="${ula_prefix}::1"
@@ -887,7 +887,7 @@ create_macvlan_network() {
     read -r -p "请输入 IPv6 网关 (回车使用推荐 $suggest_gateway6，留空表示不启用IPv6): " gateway6
     [ -z "$gateway6" ] && gateway6="$suggest_gateway6"
   else
-    read -r -p "请输入 IPv6 网关 (例如 fd10:86:28:2::1，留空表示不启用IPv6): " gateway6
+    read -r -p "请输入 IPv6 网关 (例如 fd10:0:1:0::1，留空表示不启用IPv6): " gateway6
   fi
 
   if [ -z "$gateway6" ]; then
@@ -1015,9 +1015,9 @@ create_macvlan_bridge() {
     ' | head -n1)
     if [ -n "$iprange4_cidr" ] && [ "$iprange4_cidr" != "null" ]; then
         echo "🌐 IPv4 IPRange: $iprange4_cidr"
-        base4="${iprange4_cidr%/*}"   # 例如 10.86.21.0
+        base4="${iprange4_cidr%/*}"   # 例如 10.0.2.0
     else
-        base4="${subnet4_cidr%/*}"    # 例如 10.86.20.0
+        base4="${subnet4_cidr%/*}"    # 例如 10.0.2.0
     fi
     # ⭐ 路由/掩码：优先 IPRange，缺省退回 Subnet
     route4_cidr="${iprange4_cidr:-$subnet4_cidr}"
@@ -1051,14 +1051,14 @@ create_macvlan_bridge() {
         ' | head -n1)
         if [ -n "$iprange6_cidr" ] && [ "$iprange6_cidr" != "null" ]; then
             echo "🌐 IPv6 IPRange: $iprange6_cidr"
-            base6="${iprange6_cidr%/*}"    # 比如 fd10:86:20:: 或 fd10:86:20::100
+            base6="${iprange6_cidr%/*}"    # 比如 fd10:0:20:: 或 fd10:0:20::100
         else
-            base6="${subnet6_cidr%/*}"     # 比如 fd10:86:20::
+            base6="${subnet6_cidr%/*}"     # 比如 fd10:0:20::
         fi
 
         # 归一：提纯前缀主体，统一 /64，bridge 固定 ::eeee
-        base6_addr="${subnet6_cidr%/*}"   # fd10:86:20::  或 fd10:86:20:1::
-        base6_prefix="${base6_addr%%::*}" # fd10:86:20    或 fd10:86:20:1
+        base6_addr="${subnet6_cidr%/*}"   # fd10:0:20::  或 fd10:0:20:1::
+        base6_prefix="${base6_addr%%::*}" # fd10:0:20    或 fd10:0:20:1
 
         bridge6_cidr="${base6_prefix}::eeee/64"
         route6_pref="${base6_prefix}::/64"
@@ -1416,7 +1416,7 @@ install_adguardhome() {
     if [ -f "${WORK_DIR}/AdGuardHome.yaml" ]; then
         sed -i "s/10.0.1.119/${mosdns}/g" "${WORK_DIR}/AdGuardHome.yaml"
         if [ -n "$mosdns6" ]; then
-            sed -i "s/fd10::1:119/${mosdns6}/g" "${WORK_DIR}/AdGuardHome.yaml"
+            sed -i "s/#[fd10::1:119]/[${mosdns6}]/g" "${WORK_DIR}/AdGuardHome.yaml"
         fi
         if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
             sed -i "s/10.0.0.1/${gateway}/g" "${WORK_DIR}/AdGuardHome.yaml"
@@ -1528,15 +1528,15 @@ install_mosdns() {
     # repo_stage_update 会设置：WORK_DIR / NEED_SWITCH / NEXT_DIR / BAK_DIR（全局变量）
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 6) 替换 config.yaml 里上游 mihomo / gateway（⚠️保留你原来的逻辑，不删）
-    if [ -f "config.yaml" ]; then
+    # 6) 替换 dns.yaml 里上游 mihomo / gateway
+    if [ -f "dns.yaml" ]; then
         # 用 # 作为分隔符更稳（避免 / 等字符导致 sed 崩）
-        sed -i "s#198.18.0.2#${mihomo}#g" config.yaml
+        sed -i "s#198.18.0.2#${mihomo}#g" dns.yaml
         if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
-            sed -i "s#10.0.0.1#${gateway}#g" config.yaml
+            sed -i "s#10.0.0.1#${gateway}#g" dns.yaml
         fi
     else
-        echo "❌ 未找到 ${WORK_DIR}/config.yaml"
+        echo "❌ 未找到 ${WORK_DIR}/dns.yaml"
         return 1
     fi
 
@@ -1739,7 +1739,7 @@ install_samba() {
 
     subnet4_ip=$(echo "$subnet4" | cut -d'/' -f1)
     subnet4_mask=$(echo "$subnet4" | cut -d'/' -f2)
-    base_v4_prefix="${subnet4_ip%.*}"   # 例如 10.86.28
+    base_v4_prefix="${subnet4_ip%.*}"   # 例如 10.0.8
     last_octet=145
     samba4="${base_v4_prefix}.${last_octet}"
 
