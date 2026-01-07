@@ -1416,7 +1416,7 @@ install_adguardhome() {
     if [ -f "${WORK_DIR}/AdGuardHome.yaml" ]; then
         sed -i "s/10.0.1.119/${mosdns}/g" "${WORK_DIR}/AdGuardHome.yaml"
         if [ -n "$mosdns6" ]; then
-            sed -i "s/#[fd10::1:119]/[${mosdns6}]/g" "${WORK_DIR}/AdGuardHome.yaml"
+            sed -i "s/#\[fd10::1:119\]/[${mosdns6}]/g" "${WORK_DIR}/AdGuardHome.yaml"
         fi
         if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
             sed -i "s/10.0.0.1/${gateway}/g" "${WORK_DIR}/AdGuardHome.yaml"
