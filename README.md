@@ -1,4 +1,4 @@
-# Armbian 旁路由脚本 
+# Armbian 旁路由一键脚本 
 
 此项目提供快捷脚本，用于在类Armbian系统中创建Docker macvlan网络，并配置宿主机与容器之间的macvlan bridge互通。
 
@@ -6,7 +6,7 @@
 
 本代码已在群晖7.3+（可能需要补全欠缺的命令），飞牛1.0+，armbian（linux6.1+） 上测试通过。
 
----
+
 ## ✨ 功能特性
 - 交互式选择网卡并确认 IP / 网关 / 子网配置
 - 创建 Docker macvlan 网络
@@ -14,7 +14,7 @@
 - 写入并启用 Systemd 服务，确保开机自启
 - 预定义多个容器 IP：librespeed（.111） AdGuardhome（.114）、MosDNS（.119）、Mihomo（.120）
 - 此代码多数由openai和gemimi生成
----
+
 
 ## ⚙️ 脚本菜单说明
 | 序号 | 功能描述           |
@@ -41,9 +41,6 @@
 | 97 | 安装watchtower 自动更新 |
 | 98 | 强制使用watchtower更新一次镜像 |
 | 99 | 退出脚本           |
-
-
----
 
 ## 🚀 使用方法
 
