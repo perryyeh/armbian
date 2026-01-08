@@ -77,12 +77,12 @@ chmod +x install.sh
 - 默认使用ipv4计算ipv6 ula地址（⚠️这不符合RFC4193，想合规可手工输入合规的ipv6 ula），生成fd10::/64（对应10.0.0.0/8）、fd17::/64（对应172.16.0.0/12）、fd19::/64（对应192.168.0.0/16）作为 IPv6 网段，如不默认则一定要手工输入ipv6 ula
 - 安装macvlan bridge错误请回滚操作，以免流量死循环导致无法进入而重新刷机
 
-## 📦依赖：
+## 📦 依赖：
 - 脚本会自动安装依赖的命令： ipcalc curl jq git
 - https://github.com/perryyeh/mosdns
 - https://github.com/perryyeh/adguardhome
 
-## 📚参考文献：
+## 📚 参考文献：
 - https://github.com/IrineSistiana/mosdns
 - https://github.com/AdguardTeam/AdGuardHome
 
