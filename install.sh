@@ -1473,7 +1473,7 @@ install_mosdns() {
     # 仅用于写 mosdns 上游：只需要 mihomo IPv4
     local mihomo_input mihomo
 
-    read -r -p "请输入 mihomo / surge IPv4（可输完整IP或最后一段；回车默认 120）: " mihomo_input
+    read -r -p "surge请输入198.18.0.2, mihomo请输入输完整IP或最后一段（回车默认 120）: " mihomo_input
 
     # ✅ 关键修复
     if [ -z "$mihomo_input" ]; then
