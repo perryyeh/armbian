@@ -89,7 +89,7 @@ function show_menu() {
     echo "14）安装adguardhome"
     echo "19）安装mosdns"
     echo "20）安装mihomo"
-    echo "21）安装ddns-go【依赖mihomo达成在外回家】"
+    echo "21）安装ddns-go【依赖mihomo入站】"
     echo "45）安装samba"
     echo "70) 迁移docker目录"
     echo "71) 优化docker日志"
