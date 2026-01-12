@@ -74,14 +74,14 @@ chmod +x install.sh
 10. 最后创建macvlan bridge，解决宿主机和容器之间的互通。
 
 ### 4.ipv4+ipv6回家
-⚠️ 入站协议尽量避免udp。下列方案依赖mihomo入站，请先安装mihomo并配置好入站端口
+⚠️ 入站协议尽量避免udp。下列方案依赖mihomo入站，请先安装mihomo并配置好入站端口。
 
 | 场景 | 公网ipv4 | 公网ipv6 | 容器可得ipv6 | 入站方式                                                                                           
 |----|---|---|----------|------------------------------------------------------------------------------------------------|
 | 1  | ✅ | ✅ | ✅        | 输入21，安装和mihomo共用ip【局域网ipv4+公网ipv6】的ddnsgo来更新ipv4+ipv6。ipv4在路由器上端口转发到mihomo，ipv6在路由器上开放ipv6端口入站 |
-| 2  | ❌ | ✅ | ✅        | 输入21，安装和mihomo共用ip【局域网ipv4+公网ipv6】的ddnsgo来更新ipv6。 IPv4考虑relay(比如lucky), ipv6在路由器上开放ipv6端口入站    |
+| 2  | ❌ | ✅ | ✅        | 输入21，安装和mihomo共用ip【局域网ipv6】的ddnsgo来更新ipv6。 IPv4考虑relay(比如lucky), ipv6在路由器上开放ipv6端口入站           |
 | 3  | ✅ | ❌ | ❌        | 随意ddns后，路由器加端口转发，仅IPv4。                                                                        |
-| 4  | ❌ | ✅ | ❌        | IPv6 inbound 可做但不推荐 → 视作行5 → relay fallback                                                    |
+| 4  | ❌ | ✅ | ❌        | IPv6入站可做但不推荐，视作行5考虑                                                                            |
 | 5  | ❌ | ❌ | ❌        | 选relay/tunnel方案，比如cloudflare tunnel，frp，tailscale什么的                                           |
 
 ## 📌 注意事项
