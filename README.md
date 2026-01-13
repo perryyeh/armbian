@@ -17,31 +17,33 @@
 
 
 ## ⚙️ 脚本菜单说明
-| 序号 | 功能描述                |
-|----|---------------------|
-| 0  | 显示菜单                |
-| 1  | 显示操作系统信息            |
-| 2  | 显示网卡信息              |
-| 3  | 显示磁盘信息              |
-| 4  | 显示 Docker 信息        |
-| 5  | 格式化磁盘并挂载            |
-| 7  | 安装 Docker           |
-| 8  | 创建macvlan（包括ipv4+ipv6） |
-| 9  | 清理 macvlan          |
-| 10 | 安装 Portainer        |
-| 11 | 安装 LibreSpeed       |
-| 14 | 安装 AdGuardHome      |
-| 19 | 安装 mosdns           |
-| 20 | 安装 mihomo           |
-| 21 | 安装 ddnsgo【依赖mihomo】 |
-| 45 | 安装 samba            |
-| 70 | 迁移docker目录          |
-| 71 | 优化docker日志          |
-| 90 | 创建macvlan bridge    |
-| 91 | 清理macvlan bridge    |
-| 97 | 安装watchtower 自动更新   |
-| 98 | 强制使用watchtower更新一次镜像 |
-| 99 | 退出脚本                |
+| 序号 | 功能描述                        |
+|----|-----------------------------|
+| 0  | 显示菜单                        |
+| 1  | 显示操作系统信息                    |
+| 2  | 显示网卡信息                      |
+| 3  | 显示磁盘信息                      |
+| 4  | 显示 Docker 信息                |
+| 5  | 格式化磁盘并挂载                    |
+| 7  | 安装 Docker                   |
+| 8  | 创建macvlan（包括ipv4+ipv6）      |
+| 9  | 清理 macvlan                  |
+| 10 | 安装 Portainer                |
+| 11 | 安装 LibreSpeed               |
+| 14 | 安装 AdGuardHome              |
+| 19 | 安装 mosdns                   |
+| 20 | 安装 mihomo                   |
+| 21 | 安装 ddnsgo【依赖mihomo】         |
+| 22 | 安装 ddnsgo【依赖mihomo】         |
+| 23 | 安装 gost + gost-ui【依赖mihomo】 |
+| 45 | 安装 samba                    |
+| 70 | 迁移docker目录                  |
+| 71 | 优化docker日志                  |
+| 90 | 创建macvlan bridge            |
+| 91 | 清理macvlan bridge            |
+| 97 | 安装watchtower 自动更新           |
+| 98 | 强制使用watchtower更新一次镜像        |
+| 99 | 退出脚本                        |
 
 ## 🚀 使用方法
 
@@ -83,6 +85,13 @@ chmod +x install.sh
 | 3  | ✅ | ❌ | ❌        | 随意ddns后，路由器加端口转发，仅IPv4。                                                                        |
 | 4  | ❌ | ✅ | ❌        | IPv6入站可做但不推荐，视作行5考虑                                                                            |
 | 5  | ❌ | ❌ | ❌        | 选relay/tunnel方案，比如cloudflare tunnel，frp，tailscale什么的                                           |
+
+### 5.其他镜像
+
+##### mihomo：解决代理和在外回家入站，入站统一收口到mihomo的ipv4+ipv6
+##### ddnsgo：和mihomo共用ipv4+ipv6，解决域名更新问题
+##### lucky：和mihomo共用ipv4+ipv6，解决ipv4打洞问题
+##### gost：和mihomo共用ipv4+ipv6，解决内外端口不一致问题
 
 ## 📌 注意事项
 - 默认使用ipv4计算容器的mac地址，mac地址格式类似02:*:86
