@@ -99,7 +99,7 @@ chmod +x install.sh
 - 安装macvlan bridge错误请回滚操作，以免流量死循环导致无法进入而重新刷机
 
 ## 📦 依赖：
-- 脚本会自动安装依赖的命令： ipcalc curl jq git
+- 脚本会自动安装依赖的命令： ipcalc curl jq
 - https://github.com/perryyeh/mosdns
 - https://github.com/perryyeh/adguardhome
 

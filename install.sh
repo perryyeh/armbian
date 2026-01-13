@@ -5,7 +5,7 @@
 install_dependencies() {
     echo "🔧 检查并安装依赖（自动适配系统）..."
 
-    deps=(ipcalc curl jq git)
+    deps=(ipcalc curl jq tar)
 
     # 统一检测函数
     need_install() {
@@ -52,10 +52,6 @@ install_dependencies() {
             /opt/bin/opkg install "${to_install[@]}"
         fi
 
-        # 兼容 Entware git 没 wrapper 的情况
-        if [ ! -x /opt/bin/git ] && [ -x /opt/lib/git-core/git ]; then
-            ln -sf /opt/lib/git-core/git /opt/bin/git
-        fi
         return 0
     fi
 
@@ -1320,8 +1316,32 @@ install_librespeed() {
         rm -rf "${dockerapps}/librespeed"
     fi
 
-    # 6) clone 仓库（仓库内自带 docker-compose.yml）
-    git clone https://github.com/perryyeh/librespeed.git "${dockerapps}/librespeed" || return 1
+    # 6) 下载源码（使用 GitHub tar.gz，不依赖 git）
+    local repo_base="https://github.com/perryyeh/librespeed"
+    local tar_url="${repo_base}/archive/refs/heads/main.tar.gz"
+    local tmp_tar="/tmp/librespeed-$$.tar.gz"
+
+    echo "⬇️ 正在下载 LibreSpeed 源码：$tar_url"
+    if ! curl -fsSL "$tar_url" -o "$tmp_tar"; then
+        echo "❌ 下载失败：$tar_url"
+        rm -f "$tmp_tar"
+        return 1
+    fi
+
+    mkdir -p "${dockerapps}/librespeed" || {
+        echo "❌ 创建目录失败：${dockerapps}/librespeed"
+        rm -f "$tmp_tar"
+        return 1
+    }
+
+    if ! tar -xzf "$tmp_tar" -C "${dockerapps}/librespeed" --strip-components=1; then
+        echo "❌ 解压 LibreSpeed 源码失败"
+        rm -f "$tmp_tar"
+        rm -rf "${dockerapps}/librespeed"
+        return 1
+    fi
+
+    rm -f "$tmp_tar"
     cd "${dockerapps}/librespeed" || return 1
 
     # 7) 写 .env（compose 读取）
