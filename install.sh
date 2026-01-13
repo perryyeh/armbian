@@ -383,12 +383,6 @@ prompt_ipv4_last_octet() {
 
 # 仓库更新
 repo_stage_update() {
-  # 用法同原来：
-  # repo_stage_update "项目名" "/data/dockerapps" "repo_url" "dir_name"
-  #
-  # 输出全局变量：
-  #   TARGET_DIR WORK_DIR NEED_SWITCH NEXT_DIR BAK_DIR
-
   local name="$1"
   local base="$2"
   local repo_url="$3"
@@ -402,36 +396,47 @@ repo_stage_update() {
   NEXT_DIR=""
   BAK_DIR=""
 
-  # ✅ 关键改动：只要正式目录存在（无论是否 git），都不 pull，直接走 next clone
+  # === 将 .git URL 转成 tar.gz URL ===
+  local tar_url
+  tar_url="$(echo "$repo_url" | sed 's/\.git$//')/archive/refs/heads/main.tar.gz"
+
+  # === 若默认分支不是 main，可 fallback master ===
+  #（可选增强：后面可以自动探测 default branch）
+
   if [ -d "$TARGET_DIR" ]; then
-    echo "🔄 [$name] 检测到现有目录：$TARGET_DIR（不做 git pull，直接走 next 部署）"
+    echo "🔄 [$name] 检测到现有目录：$TARGET_DIR（使用 tar.gz 方式部署 next）"
 
     local tmp="${base%/}/${dir_name}.tmp-${ts}"
     NEXT_DIR="${base%/}/${dir_name}.next-${ts}"
     BAK_DIR="${base%/}/${dir_name}.bak-${ts}"
 
     rm -rf "$tmp" "$NEXT_DIR" 2>/dev/null || true
+    mkdir -p "$tmp" || return 1
 
-    if git clone "$repo_url" "$tmp" && mv "$tmp" "$NEXT_DIR"; then
+    if curl -L "$tar_url" | tar -xz -C "$tmp" --strip-components=1; then
+      mv "$tmp" "$NEXT_DIR"
       WORK_DIR="$NEXT_DIR"
       NEED_SWITCH=1
       echo "✅ [$name] next 目录已准备：$NEXT_DIR"
       return 0
     fi
 
-    echo "❌ [$name] next clone 失败：保持现有目录不变（避免断网/断服务）"
+    echo "❌ [$name] next tar 下载失败，保留现状避免断服"
     rm -rf "$tmp" "$NEXT_DIR" 2>/dev/null || true
     return 1
   fi
 
-  # 不存在则首次 clone 到正式目录（NEED_SWITCH=0）
-  echo "⬇️ [$name] 未检测到目录，直接 clone 到正式目录：$TARGET_DIR"
-  if git clone "$repo_url" "$TARGET_DIR"; then
+  # 首次部署（无 next）
+  echo "⬇️ [$name] 首次部署，使用 tar.gz 克隆到正式目录：$TARGET_DIR"
+  mkdir -p "$TARGET_DIR" || return 1
+
+  if curl -L "$tar_url" | tar -xz -C "$TARGET_DIR" --strip-components=1; then
     WORK_DIR="$TARGET_DIR"
     NEED_SWITCH=0
     return 0
   fi
 
+  echo "❌ [$name] tar 下载失败"
   return 1
 }
 
