@@ -2280,8 +2280,7 @@ run_watchtower_once() {
         --cleanup \
         --rolling-restart \
         --include-stopped \
-        --disable-containers watchtower \
-        --http-timeout 60
+        --disable-containers watchtower
     echo "✅ watchtower run-once 更新完成"
 }
 
