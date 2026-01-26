@@ -1878,7 +1878,7 @@ install_gost() {
 }
 
 install_portainer() {
-    read -p "即将安装watchtower，请输入存储目录(例如 /data/dockerapps): " dockerapps
+    read -p "即将安装portainer，请输入存储目录(例如 /data/dockerapps): " dockerapps
     docker run -d -p 8000:8000 -p 9443:9443 --network=host --name=portainer --restart=always \
     -v /var/run/docker.sock:/var/run/docker.sock -v ${dockerapps}/portainer:/data portainer/portainer-ce:lts
 }
@@ -2246,6 +2246,7 @@ install_watchtower() {
 
     docker run -d \
       --name watchtower \
+      --network host \
       --restart=always \
       -e DOCKER_API_VERSION="$API" \
       -e TZ="Asia/Shanghai" \
@@ -2269,7 +2270,8 @@ run_watchtower_once() {
         --cleanup \
         --rolling-restart \
         --include-stopped \
-        --disable-containers watchtower
+        --disable-containers watchtower \
+        --http-timeout 60
     echo "✅ watchtower run-once 更新完成"
 }
 
