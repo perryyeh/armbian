@@ -2278,7 +2278,6 @@ run_watchtower_once() {
         containrrr/watchtower:latest \
         --run-once \
         --cleanup \
-        --rolling-restart \
         --include-stopped \
         --disable-containers watchtower
     echo "✅ watchtower run-once 更新完成"
