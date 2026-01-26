@@ -2242,6 +2242,16 @@ clean_macvlan_bridge() {
 install_watchtower() {
     echo "🔧 安装并启动常驻 watchtower..."
 
+    # 检查并删除旧容器（不管状态）
+    if docker ps -a --format '{{.Names}}' | grep -q '^watchtower$'; then
+        echo "🗑️ 发现旧的 watchtower 容器，强制删除..."
+        docker rm -f watchtower >/dev/null 2>&1 || true
+    fi
+
+    # 拉最新镜像
+    echo "📦 拉取最新 watchtower 镜像..."
+    docker pull containrrr/watchtower:latest
+
     API=$(docker version --format '{{.Server.APIVersion}}')
 
     docker run -d \
