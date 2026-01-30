@@ -91,6 +91,7 @@ function show_menu() {
     echo "45）安装samba"
     echo "70) 迁移docker目录"
     echo "71) 优化docker日志"
+    echo "72) 优化journald日志"
     echo "90）创建macvlan bridge"
     echo "91）清理macvlan bridge"
     echo "97）安装watchtower自动更新"
@@ -2582,6 +2583,74 @@ EOF
     fi
 }
 
+# =====================
+#  功能 72：优化 systemd-journald（日记只写内存）
+# =====================
+optimize_journald_to_volatile() {
+    # 前置校验
+    if [ -z "${BASH_VERSION:-}" ]; then exec /usr/bin/env bash "$0" "$@"; fi
+    if [ "${EUID:-$(id -u)}" -ne 0 ]; then echo "请以 root 权限运行（sudo bash $0）"; return 1; fi
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "未检测到 systemctl，无法配置 journald。"
+        return 1
+    fi
+    if ! command -v journalctl >/dev/null 2>&1; then
+        echo "未检测到 journalctl，无法检查 journald 状态。"
+        return 1
+    fi
+
+    local CONF="/etc/systemd/journald.conf"
+    local DROPIN_DIR="/etc/systemd/journald.conf.d"
+    local DROPIN_FILE="${DROPIN_DIR}/volatile.conf"
+    local BACKUP_SUFFIX; BACKUP_SUFFIX="$(date +%Y%m%d-%H%M%S)"
+
+    # 备份主配置（如果存在）
+    if [[ -f "$CONF" ]]; then
+        cp -a "$CONF" "${CONF}.bak-${BACKUP_SUFFIX}"
+        echo "🧩 已备份 $CONF 为 ${CONF}.bak-${BACKUP_SUFFIX}"
+    fi
+
+    # 写入 drop-in（推荐：避免主配置被包更新覆盖）
+    mkdir -p "$DROPIN_DIR"
+    cat > "$DROPIN_FILE" <<'EOF'
+[Journal]
+Storage=volatile
+RuntimeMaxUse=32M
+SystemMaxUse=0
+EOF
+    echo "✅ 已写入 $DROPIN_FILE（Storage=volatile）"
+
+    # 删除持久化日志目录（关键：否则 Storage=auto/persistent 会回写磁盘）
+    if [[ -d /var/log/journal ]]; then
+        rm -rf /var/log/journal
+        echo "🧹 已删除 /var/log/journal（禁用持久化日志目录）"
+    fi
+
+    # 重启 journald 使配置生效
+    systemctl restart systemd-journald || {
+        echo "❌ journald 重启失败，请查看：journalctl -u systemd-journald --no-pager -n 200"
+        return 1
+    }
+
+    # 回显确认：Storage 必须是 volatile；disk-usage 应显示无持久化日志
+    local STORAGE DISK_USAGE
+    STORAGE="$(systemctl show systemd-journald --property=Storage --value 2>/dev/null || true)"
+    DISK_USAGE="$(journalctl --disk-usage 2>/dev/null || true)"
+
+    echo "🔎 journald Storage：${STORAGE:-未知}"
+    echo "🔎 journald 磁盘占用：${DISK_USAGE:-未知}"
+
+    if [[ "$STORAGE" != "volatile" ]]; then
+        echo "⚠️ 警告：Storage 不是 volatile，可能仍会写盘。请检查 $DROPIN_FILE 是否生效。"
+    fi
+
+    if echo "$DISK_USAGE" | grep -qiE 'take up|takes up'; then
+        echo "⚠️ 警告：仍检测到持久化日志占用（可能其它目录残留）。可检查是否存在 /var/log/journal 并确保已删除。"
+    else
+        echo "✅ journald 已切换为内存日志（重启后日志会清空）。"
+    fi
+}
+
 # ========== 主循环 ==========
 
 install_dependencies
@@ -2609,6 +2678,7 @@ while true; do
         45) install_samba ;;
         70) migrate_docker_datadir ;;
         71) optimize_docker_logs ;;
+        72) optimize_journald_to_volatile ;;
         90) create_macvlan_bridge ;;
         91) clean_macvlan_bridge ;;
         97) install_watchtower ;;
