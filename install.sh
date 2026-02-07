@@ -734,10 +734,9 @@ create_macvlan_network() {
         ;;
       *)
         # 放宽：允许 eth/ens/enp/eno/wlan/bond/team/br/ovs 等以及 VLAN 子接口 (xxx.88)
-        # 你飞牛/OVS 场景需要把 br0/ovs* 放进来
-        if [[ "$iface" =~ ^(e(n|th|np|ns|no|ni)|ens|enp|eno|eth|wlan|wl|bond|team|br|ovs)([0-9a-zA-Z\.\-:_]+)?$ ]]; then
+        # if [[ "$iface" =~ ^(e(n|th|np|ns|no|ni)|ens|enp|eno|eth|wlan|wl|bond|team|br|ovs)([0-9a-zA-Z\.\-:_]+)?$ ]]; then
           interfaces+=("$iface")
-        fi
+        # fi
         ;;
     esac
   done < <(ls /sys/class/net)
