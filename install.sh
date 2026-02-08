@@ -746,12 +746,29 @@ create_macvlan_network() {
     return 1
   fi
 
+  # 收集 macvlan 网络与 parent 接口的映射
+  declare -A MACVLAN_BY_PARENT
+
+  while IFS= read -r net; do
+    parent="$(docker network inspect "$net" -f '{{.Options.parent}}' 2>/dev/null)"
+    [ -n "$parent" ] && MACVLAN_BY_PARENT["$parent"]+="$net "
+  done < <(docker network ls --filter driver=macvlan --format '{{.Name}}')
+
   echo "请选择 parent 接口（可选物理口 / VLAN 子接口 / OVS bridge 口）："
-  local i ip4 ip6
+  local i ip4 ip6 macvlans
   for i in "${!interfaces[@]}"; do
-    ip4="$(ip -4 addr show "${interfaces[$i]}" 2>/dev/null | awk '/ inet /{print $2}' | head -n1)"
-    ip6="$(ip -6 addr show "${interfaces[$i]}" 2>/dev/null | awk '/ inet6 / && $2 ~ /^fd/{print $2}' | head -n1)"
-    echo "$i) ${interfaces[$i]}  IPv4: ${ip4:-无}  ULA: ${ip6:-无}"
+    iface="${interfaces[$i]}"
+
+    ip4="$(ip -4 addr show "$iface" 2>/dev/null | awk '/ inet /{print $2}' | head -n1)"
+    ip6="$(ip -6 addr show "$iface" 2>/dev/null | awk '/ inet6 / && $2 ~ /^fd/{print $2}' | head -n1)"
+
+    macvlans="${MACVLAN_BY_PARENT[$iface]}"
+    if [ -n "$macvlans" ]; then
+      echo "$i) $iface  IPv4: ${ip4:-无}  ULA: ${ip6:-无}"
+      echo "    ↳ 已存在 macvlan: $macvlans"
+    else
+      echo "$i) $iface  IPv4: ${ip4:-无}  ULA: ${ip6:-无}"
+    fi
   done
 
   local netcard_index networkcard
@@ -762,7 +779,7 @@ create_macvlan_network() {
     echo "退出 macvlan 创建。"
     return 0
   fi
-  
+
   networkcard="${interfaces[$netcard_index]}"
   [ -n "$networkcard" ] || { echo "❌ 未能获取网卡名称"; return 1; }
   echo "选择的 parent 接口: $networkcard"
