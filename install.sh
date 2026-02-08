@@ -755,11 +755,14 @@ create_macvlan_network() {
   done
 
   local netcard_index networkcard
-  read -r -p "输入网卡序号: " netcard_index
-  if ! [[ "$netcard_index" =~ ^[0-9]+$ ]] || [ "$netcard_index" -lt 0 ] || [ "$netcard_index" -ge "${#interfaces[@]}" ]; then
-    echo "❌ 无效的网卡序号：$netcard_index"
-    return 1
+  read -r -p "输入网卡序号(直接回车退出): " netcard_index
+
+  # 直接回车：退出（不报错）
+  if [ -z "$netcard_index" ]; then
+    echo "退出 macvlan 创建。"
+    return 0
   fi
+  
   networkcard="${interfaces[$netcard_index]}"
   [ -n "$networkcard" ] || { echo "❌ 未能获取网卡名称"; return 1; }
   echo "选择的 parent 接口: $networkcard"
