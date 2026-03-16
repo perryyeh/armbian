@@ -88,7 +88,6 @@ function show_menu() {
     echo "21）安装ddns-go【依赖mihomo】"
     echo "22）安装lucky【依赖mihomo】"
     echo "23）安装gost+gost-ui【依赖mihomo】"
-    echo "45）安装samba"
     echo "70) 迁移docker目录"
     echo "71) 优化docker日志"
     echo "72) 优化journald日志"
@@ -1903,147 +1902,6 @@ install_portainer() {
     -v /var/run/docker.sock:/var/run/docker.sock -v ${dockerapps}/portainer:/data portainer/portainer-ce:lts
 }
 
-# 安装samba
-install_samba() {
-    echo "🔧 开始安装 Samba（基于 macvlan 独立 IP）"
-
-    # 0. 选择要使用的 macvlan 网络（数字选择）
-    echo "🔧 检测可用的 macvlan 网络："
-    mapfile -t macvlan_list < <(docker network ls --format '{{.Name}}' | grep '^macvlan' || true)
-
-    if [ ${#macvlan_list[@]} -eq 0 ]; then
-        echo "❌ 未检测到任何 macvlan 网络，请先创建（菜单 8）。"
-        return 1
-    fi
-
-    echo "可用网络："
-    for i in "${!macvlan_list[@]}"; do
-        idx=$((i + 1))
-        echo "  ${idx}) ${macvlan_list[$i]}"
-    done
-
-    read -p "请选择要使用的 macvlan 网络编号（默认 1）: " net_index
-    net_index=${net_index:-1}
-
-    if ! [[ "$net_index" =~ ^[0-9]+$ ]] || [ "$net_index" -lt 1 ] || [ "$net_index" -gt "${#macvlan_list[@]}" ]; then
-        echo "❌ 无效输入。"
-        return 1
-    fi
-
-    macvlan_name="${macvlan_list[$((net_index - 1))]}"
-    echo "✅ 已选择 macvlan 网络: ${macvlan_name}"
-
-    # 读取该 macvlan 网络配置
-    network_info=$(docker network inspect "$macvlan_name" 2>/dev/null)
-    if [ -z "$network_info" ] || [ "$network_info" = "[]" ]; then
-        echo "❌ 未检测到 docker 网络 $macvlan_name，请确认名称是否正确。"
-        return 1
-    fi
-
-    # ---- 解析 IPv4 subnet ----
-    subnet4=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":") | not) | .Subnet // empty')
-
-    if [ -z "$subnet4" ] || [ "$subnet4" = "null" ]; then
-        echo "❌ 网络 $macvlan_name 未配置 IPv4 子网，无法为 Samba 分配地址。"
-        return 1
-    fi
-
-    subnet4_ip=$(echo "$subnet4" | cut -d'/' -f1)
-    subnet4_mask=$(echo "$subnet4" | cut -d'/' -f2)
-    base_v4_prefix="${subnet4_ip%.*}"   # 例如 10.0.8
-    last_octet=145
-    samba4="${base_v4_prefix}.${last_octet}"
-
-    # ---- 解析 IPv6 subnet（如有）----
-    subnet6=$(echo "$network_info" | jq -r '.[0].IPAM.Config[] | select(.Subnet | test(":")) | .Subnet // empty')
-
-    samba6=""
-    subnet6_mask=""
-    if [ -n "$subnet6" ] && [ "$subnet6" != "null" ]; then
-        subnet6_ip=$(echo "$subnet6" | cut -d'/' -f1)
-        subnet6_mask=$(echo "$subnet6" | cut -d'/' -f2)
-
-        # 用 IPv6 子网地址的前缀 + host-id 145 生成地址
-        prefix6=$(echo "$subnet6_ip" | rev | cut -d':' -f2- | rev):
-        samba6="${prefix6}${last_octet}"
-    fi
-
-    # MAC 用工具函数 ip_to_mac 由 IPv4 生成（该函数在脚本其他位置已存在）
-    sambamac=$(ip_to_mac "$samba4")
-
-    echo "📡 选用的 macvlan 网络: $macvlan_name"
-    echo "📍 规划的 Samba 地址:"
-    echo "  IPv4 : $samba4/$subnet4_mask"
-    [ -n "$samba6" ] && echo "  IPv6 : $samba6/${subnet6_mask}"
-    echo "  MAC  : $sambamac"
-
-    # 2. 收集用户参数
-    read -p "请输入 Docker 应用存储目录(例如 /data/dockerapps): " dockerapps
-    read -p "请输入要共享的实际路径(例如 /data/nvr/samba): " smb_storage
-    read -p "请输入 Samba 用户名: " smb_user
-    read -s -p "请输入 Samba 密码: " smb_pass
-    echo
-
-    appdir="${dockerapps}/samba"
-
-    # 3. 如果目录已存在，先删掉再 clone
-    if [ -d "${appdir}" ]; then
-        echo "⚠️ 检测到 ${appdir} 已存在，正在删除..."
-        rm -rf "${appdir}"
-    fi
-
-    mkdir -p "${dockerapps}"
-
-    # 4. 克隆仓库（你的仓库）
-    git clone https://github.com/perryyeh/samba.git "${appdir}"
-
-    cd "${appdir}" || return 1
-
-    # 5. 确认 docker-compose.yml 存在
-    if [ ! -f docker-compose.yml ]; then
-        echo "❌ 未找到 ${appdir}/docker-compose.yml，请确认仓库中已包含该文件"
-        return 1
-    fi
-
-    # 6. 生成 .env 文件（包含 appdir / MACVLAN_NET 等参数）
-    cat > .env <<EOF
-# 使用的 macvlan 网络名（compose 中 networks.macvlan.name 使用）
-MACVLAN_NET=${macvlan_name}
-
-# 固定 IP / MAC
-samba4=${samba4}
-samba6=${samba6}
-sambamac=${sambamac}
-
-# Samba 配置
-SMB_USER=${smb_user}
-SMB_PASS=${smb_pass}
-SMB_STORAGE=${smb_storage}
-SMB_PORT=445
-
-# 应用目录（用于挂载 smb.conf / users.conf）
-appdir=${appdir}
-EOF
-
-    echo "✅ 已生成 ${appdir}/.env："
-    cat .env
-    echo
-
-    # 7. 启动容器
-    docker compose up -d
-
-    echo "✅ Samba 容器已启动："
-    echo "  使用 macvlan 网络 : ${macvlan_name}"
-    echo "  IPv4 地址        : ${samba4}"
-    [ -n "$samba6" ] && echo "  IPv6 地址        : ${samba6}"
-    echo "  MAC 地址         : ${sambamac}"
-    echo "  用户名           : ${smb_user}"
-    echo "  密码             : ${smb_pass}"
-    echo "  宿主路径         : ${smb_storage}"
-    echo "  配置路径         : ${appdir}/smb.conf"
-    echo "  端口             : 445"
-}
-
 # ========== 删除 docker macvlan 网络 ==========
 clean_macvlan_network() {
     echo "🧹 清理 Docker macvlan 网络"
@@ -2694,7 +2552,6 @@ while true; do
         20) install_mihomo ;;
         21) install_ddnsgo ;;
         23) install_gost ;;
-        45) install_samba ;;
         70) migrate_docker_datadir ;;
         71) optimize_docker_logs ;;
         72) optimize_journald_to_volatile ;;
