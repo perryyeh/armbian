@@ -34,7 +34,6 @@
 | 19 | 安装 mosdns                   |
 | 20 | 安装 mihomo                   |
 | 21 | 安装 ddnsgo【依赖mihomo】         |
-| 22 | 安装 ddnsgo【依赖mihomo】         |
 | 23 | 安装 gost + gost-ui【依赖mihomo】 |
 | 45 | 安装 samba                    |
 | 70 | 迁移docker目录                  |
