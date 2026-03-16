@@ -34,11 +34,12 @@
 | 19 | 安装 mosdns                   |
 | 20 | 安装 mihomo                   |
 | 21 | 安装 ddnsgo【依赖mihomo】         |
+| 22 | 安装 lucky【依赖mihomo】          |
 | 23 | 安装 gost + gost-ui【依赖mihomo】 |
 | 45 | 安装 samba                    |
 | 70 | 迁移docker目录                  |
 | 71 | 优化docker日志                  |
-| 72 | 优化journald日志                  |
+| 72 | 优化journald日志                |
 | 90 | 创建macvlan bridge            |
 | 91 | 清理macvlan bridge            |
 | 97 | 安装watchtower 自动更新           |
