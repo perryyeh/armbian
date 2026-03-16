@@ -1896,6 +1896,86 @@ install_gost() {
     repo_offer_delete_backup "gost" "$BAK_DIR" "gost"
 }
 
+install_lucky() {
+    echo "🔧 安装 Lucky（依赖 mihomo 已安装并运行，并与 mihomo 共用网络）"
+
+    local mihomo_container="mihomo"
+
+    # 0) 检查 mihomo 是否在运行
+    if ! docker ps --format '{{.Names}}' | grep -qx "$mihomo_container"; then
+        echo "❌ 未检测到正在运行的 mihomo 容器（容器名：$mihomo_container）。"
+        echo "   Lucky 计划与 mihomo 共用网络 (network_mode=container:mihomo)。"
+        echo "   请先运行 install_mihomo 安装并启动 mihomo 再继续。"
+        return 1
+    fi
+
+    # 1) 输入目录
+    read -r -p "即将安装 Lucky，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
+    if [ -z "$dockerapps" ]; then
+        echo "✅ 已退出 Lucky 安装。"
+        return 0
+    fi
+
+    mkdir -p "$dockerapps" || return 1
+    cd "$dockerapps" || return 1
+
+    # 2) repo 更新
+    REPO_URL="https://github.com/perryyeh/lucky.git"
+    repo_stage_update "lucky" "$dockerapps" "$REPO_URL" "lucky" || return 1
+    cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
+
+    # 3) compose 文件
+    local compose_files=(docker-compose.yml)
+
+    # 4) 部署
+    compose_deploy_with_repo_switch "lucky" "lucky" "${compose_files[@]}" || return 1
+
+    echo "✅ Lucky 已启动！正在检测 mihomo IP 以生成访问地址..."
+
+    # 5) 获取 mihomo IP
+    local mihomo4 mihomo6
+    mihomo4="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$mihomo_container" 2>/dev/null || true)"
+    mihomo6="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.GlobalIPv6Address}}{{end}}' "$mihomo_container" 2>/dev/null || true)"
+
+    echo
+    echo "📡 mihomo 容器网络信息（Lucky 共用该 IP）："
+
+    if [ -n "$mihomo4" ]; then
+        echo "  - IPv4: $mihomo4"
+    else
+        echo "  - IPv4: 未检测到"
+    fi
+
+    if [ -n "$mihomo6" ]; then
+        echo "  - IPv6: $mihomo6"
+    else
+        echo "  - IPv6: 未检测到或未启用"
+    fi
+    echo
+
+    # 6) Lucky Web 面板
+    local lucky_port=16601
+
+    echo "👉 Lucky 管理界面："
+
+    if [ -n "$mihomo4" ]; then
+        echo "  - Web UI (IPv4)： http://${mihomo4}:${lucky_port}/"
+    fi
+
+    if [ -n "$mihomo6" ]; then
+        echo "  - Web UI (IPv6)： http://[${mihomo6}]:${lucky_port}/"
+    fi
+
+    if [ -z "$mihomo4" ] && [ -n "$mihomo6" ]; then
+        echo "ℹ️  当前仅检测到 IPv6，可通过 IPv6 地址访问 Lucky。"
+    elif [ -z "$mihomo4" ] && [ -z "$mihomo6" ]; then
+        echo "⚠️  未能自动检测 mihomo 的 IP，请手动确认 Lucky 监听端口。"
+    fi
+
+    # 7) 可选删除备份
+    repo_offer_delete_backup "lucky" "$BAK_DIR" "lucky"
+}
+
 install_portainer() {
     read -p "即将安装portainer，请输入存储目录(例如 /data/dockerapps): " dockerapps
     docker run -d -p 9443:9443 --name=portainer --restart=always \
@@ -2551,6 +2631,7 @@ while true; do
         19) install_mosdns ;;
         20) install_mihomo ;;
         21) install_ddnsgo ;;
+        22) install_lucky ;;
         23) install_gost ;;
         70) migrate_docker_datadir ;;
         71) optimize_docker_logs ;;
