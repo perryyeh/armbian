@@ -1328,39 +1328,10 @@ install_librespeed() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 5) 清理旧目录（重装就清掉）
-    if [ -d "${dockerapps}/librespeed" ]; then
-        echo "⚠️ 检测到 ${dockerapps}/librespeed 已存在，正在删除..."
-        rm -rf "${dockerapps}/librespeed"
-    fi
-
-    # 6) 下载源码（使用 GitHub tar.gz，不依赖 git）
-    local repo_base="https://github.com/perryyeh/librespeed"
-    local tar_url="${repo_base}/archive/refs/heads/main.tar.gz"
-    local tmp_tar="/tmp/librespeed-$$.tar.gz"
-
-    echo "⬇️ 正在下载 LibreSpeed 源码：$tar_url"
-    if ! curl -fsSL "$tar_url" -o "$tmp_tar"; then
-        echo "❌ 下载失败：$tar_url"
-        rm -f "$tmp_tar"
-        return 1
-    fi
-
-    mkdir -p "${dockerapps}/librespeed" || {
-        echo "❌ 创建目录失败：${dockerapps}/librespeed"
-        rm -f "$tmp_tar"
-        return 1
-    }
-
-    if ! tar -xzf "$tmp_tar" -C "${dockerapps}/librespeed" --strip-components=1; then
-        echo "❌ 解压 LibreSpeed 源码失败"
-        rm -f "$tmp_tar"
-        rm -rf "${dockerapps}/librespeed"
-        return 1
-    fi
-
-    rm -f "$tmp_tar"
-    cd "${dockerapps}/librespeed" || return 1
+    # 5) 仓库分阶段更新（内部会设置 WORK_DIR / NEED_SWITCH / BAK_DIR 等全局变量）
+    local REPO_URL="https://github.com/perryyeh/librespeed.git"
+    repo_stage_update "librespeed" "$dockerapps" "$REPO_URL" "librespeed" || return 1
+    cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
     # 7) 写 .env（compose 读取）
     cat > .env <<EOF
@@ -1374,13 +1345,13 @@ EOF
     cat .env
     echo
 
-    # 8) 启动：无IPv6时删除compose中的ipv6配置避免报错，统一用主compose启动
-    docker rm -f librespeed >/dev/null 2>&1 || true
-
+    # 8) 无IPv6场景：自动删除compose中的ipv6配置避免报错
     if [ -z "$librespeed6" ]; then
         sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
     fi
-    docker compose up -d
+
+    # 9) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
+    compose_deploy_with_repo_switch "librespeed" "librespeed" "docker-compose.yml" || return 1
 
     echo "✅ LibreSpeed 已启动"
     echo "访问地址：http://${librespeed}"
@@ -1389,6 +1360,9 @@ EOF
     else
         echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
     fi
+
+    # 10) 可选删除备份（带挂载检查）
+    repo_offer_delete_backup "librespeed" "$BAK_DIR" "librespeed"
 }
 
 install_adguardhome() {
