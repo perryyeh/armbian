@@ -1427,18 +1427,35 @@ install_adguardhome() {
 
     mkdir -p "${dockerapps}/adguardwork" "${dockerapps}" || return 1
 
-    # 4) 更新/获取仓库（stage：设置 WORK_DIR / NEED_SWITCH / TARGET_DIR / BAK_DIR）
+    # 4) 自定义容器/目录名称（回车用默认adguardhome）
+    local DEFAULT_CONTAINER_NAME="adguardhome"
+    local CONTAINER_NAME
+    read -r -p "请输入容器名称（回车默认使用 '$DEFAULT_CONTAINER_NAME'）: " CONTAINER_NAME
+    CONTAINER_NAME=${CONTAINER_NAME:-$DEFAULT_CONTAINER_NAME}
+
+    # 5) 更新/获取仓库（stage：设置 WORK_DIR / NEED_SWITCH / TARGET_DIR / BAK_DIR）
     local REPO_URL="https://github.com/perryyeh/adguardhome.git"
-    repo_stage_update "adguardhome" "$dockerapps" "$REPO_URL" "adguardhome" || return 1
+    repo_stage_update "adguardhome" "$dockerapps" "$REPO_URL" "$CONTAINER_NAME" || return 1
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 5) 是否启用 IPv6：按你原判定（macvlan 支持 + 有 IPv6 子网）
+    # 6) 替换compose配置中的容器相关字段
+    if [ "$CONTAINER_NAME" != "$DEFAULT_CONTAINER_NAME" ]; then
+        # 1. 替换services下一级的服务名称
+        sed -i "s/^  $DEFAULT_CONTAINER_NAME:/  $CONTAINER_NAME:/" docker-compose.yml
+        # 2. 替换container_name
+        sed -i "s/container_name: $DEFAULT_CONTAINER_NAME/container_name: $CONTAINER_NAME/" docker-compose.yml
+        # 3. 替换hostname
+        sed -i "s/hostname: $DEFAULT_CONTAINER_NAME/hostname: $CONTAINER_NAME/" docker-compose.yml
+        echo "✅ 已自定义容器名称/目录为：$CONTAINER_NAME"
+    fi
+
+    # 7) 是否启用 IPv6：按你原判定（macvlan 支持 + 有 IPv6 子网）
     local USE_IPV6=0
     if macvlan_ipv6_enabled "$SELECTED_MACVLAN"; then
       USE_IPV6=1
     fi
 
-    # 6) 写 .env（字段不变；但 confdir 用 WORK_DIR，避免 next 启动还挂旧目录）
+    # 8) 写 .env（字段不变；但 confdir 用 WORK_DIR，避免 next 启动还挂旧目录）
     write_env_file "$WORK_DIR/.env" \
       "MACVLAN_NET=${SELECTED_MACVLAN}" \
       "ipv4=${adguard}" \
@@ -1480,12 +1497,13 @@ install_adguardhome() {
 
     # 10) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
     #     （注意：第二个参数是容器名，必须和 compose 里的 container_name 一致）
-    compose_deploy_with_repo_switch "adguardhome" "adguardhome" "${compose_files[@]}" || return 1
+    compose_deploy_with_repo_switch "adguardhome" "$CONTAINER_NAME" "${compose_files[@]}" || return 1
 
     echo "✅ AdGuardHome 已启动：${adguard}"
     echo "  macvlan 网络: ${SELECTED_MACVLAN}"
     echo "  MAC        : ${adguardmac}"
     echo "  上游 mosdns : ${mosdns}"
+    echo "  容器名称   : ${CONTAINER_NAME}"
     if [ "$USE_IPV6" -eq 1 ]; then
         echo "  IPv6       : ${adguard6}"
     else
@@ -1559,14 +1577,31 @@ install_mosdns() {
     fi
     mkdir -p "$dockerapps" || return 1
 
-    # 5) 仓库更新：
+    # 5) 自定义容器/目录名称（回车用默认mosdns）
+    local DEFAULT_CONTAINER_NAME="mosdns"
+    local CONTAINER_NAME
+    read -r -p "请输入容器名称（回车默认使用 '$DEFAULT_CONTAINER_NAME'）: " CONTAINER_NAME
+    CONTAINER_NAME=${CONTAINER_NAME:-$DEFAULT_CONTAINER_NAME}
+
+    # 6) 仓库更新：
     local REPO_URL="https://github.com/perryyeh/mosdns.git"
-    repo_stage_update "mosdns" "$dockerapps" "$REPO_URL" "mosdns" || return 1
+    repo_stage_update "mosdns" "$dockerapps" "$REPO_URL" "$CONTAINER_NAME" || return 1
 
     # repo_stage_update 会设置：WORK_DIR / NEED_SWITCH / NEXT_DIR / BAK_DIR（全局变量）
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 6) 替换 dns.yaml 里上游 mihomo / gateway
+    # 7) 替换compose配置中的容器相关字段
+    if [ "$CONTAINER_NAME" != "$DEFAULT_CONTAINER_NAME" ]; then
+        # 1. 替换services下一级的服务名称
+        sed -i "s/^  $DEFAULT_CONTAINER_NAME:/  $CONTAINER_NAME:/" docker-compose.yml
+        # 2. 替换container_name
+        sed -i "s/container_name: $DEFAULT_CONTAINER_NAME/container_name: $CONTAINER_NAME/" docker-compose.yml
+        # 3. 替换hostname
+        sed -i "s/hostname: $DEFAULT_CONTAINER_NAME/hostname: $CONTAINER_NAME/" docker-compose.yml
+        echo "✅ 已自定义容器名称/目录为：$CONTAINER_NAME"
+    fi
+
+    # 8) 替换 dns.yaml 里上游 mihomo / gateway
     if [ -f "dns.yaml" ]; then
         # 用 # 作为分隔符更稳（避免 / 等字符导致 sed 崩）
         sed -i "s#198.18.0.2#${mihomo}#g" dns.yaml
@@ -1578,7 +1613,7 @@ install_mosdns() {
         return 1
     fi
 
-    # 7) 写 .env（compose 读取）
+    # 9) 写 .env（compose 读取）
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
 ipv4=${mosdns}
@@ -1611,15 +1646,14 @@ EOF
     if [ "$USE_IPV6" -eq 0 ]; then
         sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
     fi
-
     # 10）一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
-    compose_deploy_with_repo_switch "mosdns" "mosdns" "${compose_files[@]}" || return 1
+    compose_deploy_with_repo_switch "mosdns" "$CONTAINER_NAME" "${compose_files[@]}" || return 1
 
-    # 11）
     echo "✅ mosdns 已启动：${mosdns}"
     echo "  上游 mihomo / surge : ${mihomo}"
     echo "  macvlan 网络: ${SELECTED_MACVLAN}"
     echo "  MAC        : ${mosdnsmac}"
+    echo "  容器名称   : ${CONTAINER_NAME}"
     if [ "$USE_IPV6" -eq 1 ]; then
         echo "  IPv6       : ${mosdns6}"
     else
@@ -1669,17 +1703,34 @@ install_mihomo() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 5) repo 分阶段更新（内部会设置 WORK_DIR / NEED_SWITCH / BAK_DIR 等全局变量）
+    # 5) 自定义容器/目录名称（回车用默认mihomo）
+    local DEFAULT_CONTAINER_NAME="mihomo"
+    local CONTAINER_NAME
+    read -r -p "请输入容器名称（回车默认使用 '$DEFAULT_CONTAINER_NAME'）: " CONTAINER_NAME
+    CONTAINER_NAME=${CONTAINER_NAME:-$DEFAULT_CONTAINER_NAME}
+
+    # 6) repo 分阶段更新（内部会设置 WORK_DIR / NEED_SWITCH / BAK_DIR 等全局变量）
     REPO_URL="https://github.com/perryyeh/mihomo.git"
-    repo_stage_update "mihomo" "$dockerapps" "$REPO_URL" "mihomo" || return 1
+    repo_stage_update "mihomo" "$dockerapps" "$REPO_URL" "$CONTAINER_NAME" || return 1
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 6) 替换 config.yaml 里的网关
+    # 7) 替换compose配置中的容器相关字段
+    if [ "$CONTAINER_NAME" != "$DEFAULT_CONTAINER_NAME" ]; then
+        # 1. 替换services下一级的服务名称
+        sed -i "s/^  $DEFAULT_CONTAINER_NAME:/  $CONTAINER_NAME:/" docker-compose.yml
+        # 2. 替换container_name
+        sed -i "s/container_name: $DEFAULT_CONTAINER_NAME/container_name: $CONTAINER_NAME/" docker-compose.yml
+        # 3. 替换hostname
+        sed -i "s/hostname: $DEFAULT_CONTAINER_NAME/hostname: $CONTAINER_NAME/" docker-compose.yml
+        echo "✅ 已自定义容器名称/目录为：$CONTAINER_NAME"
+    fi
+
+    # 8) 替换 config.yaml 里的网关
     if [ -f "config.yaml" ] && [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
         sed -i "s/10.0.0.1/${gateway}/g" config.yaml
     fi
 
-    # 7) 生成 .env（compose 会用到）
+    # 9) 生成 .env（compose 会用到）
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
 ipv4=${mihomo}
@@ -1713,9 +1764,10 @@ EOF
     fi
 
     # 10) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
-    compose_deploy_with_repo_switch "mihomo" "mihomo" "${compose_files[@]}" || return 1
+    compose_deploy_with_repo_switch "mihomo" "$CONTAINER_NAME" "${compose_files[@]}" || return 1
 
     echo "✅ mihomo 已启动！访问地址：http://${mihomo}:9090/ui/  密码：admin"
+    echo "容器名称：${CONTAINER_NAME}"
     if [ "$USE_IPV6" -eq 1 ]; then
         echo "IPv6：${mihomo6}"
     else
@@ -1749,18 +1801,36 @@ install_ddnsgo() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 2) repo 分阶段更新
+    # 2) 自定义容器/目录名称（回车用默认ddnsgo）
+    local DEFAULT_CONTAINER_NAME="ddnsgo"
+    local CONTAINER_NAME
+    read -r -p "请输入容器名称（回车默认使用 '$DEFAULT_CONTAINER_NAME'）: " CONTAINER_NAME
+    CONTAINER_NAME=${CONTAINER_NAME:-$DEFAULT_CONTAINER_NAME}
+
+    # 3) repo 分阶段更新
     REPO_URL="https://github.com/perryyeh/ddnsgo.git"
-    repo_stage_update "ddnsgo" "$dockerapps" "$REPO_URL" "ddnsgo" || return 1
+    repo_stage_update "ddnsgo" "$dockerapps" "$REPO_URL" "$CONTAINER_NAME" || return 1
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 3) 选择 compose 文件列表（默认只用 docker-compose.yml）
+    # 4) 替换compose配置中的容器相关字段
+    if [ "$CONTAINER_NAME" != "$DEFAULT_CONTAINER_NAME" ]; then
+        # 1. 替换services下一级的服务名称
+        sed -i "s/^  $DEFAULT_CONTAINER_NAME:/  $CONTAINER_NAME:/" docker-compose.yml
+        # 2. 替换container_name
+        sed -i "s/container_name: $DEFAULT_CONTAINER_NAME/container_name: $CONTAINER_NAME/" docker-compose.yml
+        # 3. 替换hostname
+        sed -i "s/hostname: $DEFAULT_CONTAINER_NAME/hostname: $CONTAINER_NAME/" docker-compose.yml
+        echo "✅ 已自定义容器名称/目录为：$CONTAINER_NAME"
+    fi
+
+    # 5) 选择 compose 文件列表（默认只用 docker-compose.yml）
     local compose_files=(docker-compose.yml)
 
-    # 4) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
-    compose_deploy_with_repo_switch "ddnsgo" "ddnsgo" "${compose_files[@]}" || return 1
+    # 6) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
+    compose_deploy_with_repo_switch "ddnsgo" "$CONTAINER_NAME" "${compose_files[@]}" || return 1
 
     echo "✅ ddns-go 已启动！正在检测 mihomo IP 以生成管理地址..."
+    echo "容器名称：${CONTAINER_NAME}"
 
     # 5) 读取 mihomo 容器的 IPv4 / IPv6
     local mihomo4 mihomo6
@@ -1827,18 +1897,36 @@ install_lucky() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 2) repo 更新
+    # 2) 自定义容器/目录名称（回车用默认lucky）
+    local DEFAULT_CONTAINER_NAME="lucky"
+    local CONTAINER_NAME
+    read -r -p "请输入容器名称（回车默认使用 '$DEFAULT_CONTAINER_NAME'）: " CONTAINER_NAME
+    CONTAINER_NAME=${CONTAINER_NAME:-$DEFAULT_CONTAINER_NAME}
+
+    # 3) repo 更新
     REPO_URL="https://github.com/perryyeh/lucky.git"
-    repo_stage_update "lucky" "$dockerapps" "$REPO_URL" "lucky" || return 1
+    repo_stage_update "lucky" "$dockerapps" "$REPO_URL" "$CONTAINER_NAME" || return 1
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 3) compose 文件
+    # 4) 替换compose配置中的容器相关字段
+    if [ "$CONTAINER_NAME" != "$DEFAULT_CONTAINER_NAME" ]; then
+        # 1. 替换services下一级的服务名称
+        sed -i "s/^  $DEFAULT_CONTAINER_NAME:/  $CONTAINER_NAME:/" docker-compose.yml
+        # 2. 替换container_name
+        sed -i "s/container_name: $DEFAULT_CONTAINER_NAME/container_name: $CONTAINER_NAME/" docker-compose.yml
+        # 3. 替换hostname
+        sed -i "s/hostname: $DEFAULT_CONTAINER_NAME/hostname: $CONTAINER_NAME/" docker-compose.yml
+        echo "✅ 已自定义容器名称/目录为：$CONTAINER_NAME"
+    fi
+
+    # 5) compose 文件
     local compose_files=(docker-compose.yml)
 
-    # 4) 部署
-    compose_deploy_with_repo_switch "lucky" "lucky" "${compose_files[@]}" || return 1
+    # 6) 部署
+    compose_deploy_with_repo_switch "lucky" "$CONTAINER_NAME" "${compose_files[@]}" || return 1
 
     echo "✅ Lucky 已启动！正在检测 mihomo IP 以生成访问地址..."
+    echo "容器名称：${CONTAINER_NAME}"
 
     # 5) 获取 mihomo IP
     local mihomo4 mihomo6
