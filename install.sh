@@ -87,7 +87,6 @@ function show_menu() {
     echo "20）安装mihomo"
     echo "21）安装ddns-go【依赖mihomo】"
     echo "22）安装lucky【依赖mihomo】"
-    echo "23）安装gost+gost-ui【依赖mihomo】"
     echo "70) 迁移docker目录"
     echo "71) 优化docker日志"
     echo "72) 优化journald日志"
@@ -1810,91 +1809,6 @@ install_ddnsgo() {
     repo_offer_delete_backup "ddnsgo" "$BAK_DIR" "ddnsgo"
 }
 
-install_gost() {
-    echo "🔧 安装 gost（依赖 mihomo 已安装并运行，并与 mihomo 共用网络）"
-
-    local mihomo_container="mihomo"
-
-    # 0) 检查 mihomo 是否在运行（network_mode=container:mihomo 需要它是 running 状态）
-    if ! docker ps --format '{{.Names}}' | grep -qx "$mihomo_container"; then
-        echo "❌ 未检测到正在运行的 mihomo 容器（容器名：$mihomo_container）。"
-        echo "   gost / gost-ui 计划与 mihomo 共用网络 (network_mode=container:mihomo)。"
-        echo "   请先运行 install_mihomo 安装并启动 mihomo 再继续。"
-        return 1
-    fi
-
-    # 1) 输入目录（回车退出）
-    read -r -p "即将安装 gost，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
-    if [ -z "$dockerapps" ]; then
-        echo "✅ 已退出 gost 安装。"
-        return 0
-    fi
-
-    mkdir -p "$dockerapps" || return 1
-    cd "$dockerapps" || return 1
-
-    # 2) repo 分阶段更新（克隆/更新 perryyeh/gost 仓库）
-    REPO_URL="https://github.com/perryyeh/gost.git"
-    repo_stage_update "gost" "$dockerapps" "$REPO_URL" "gost" || return 1
-    cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
-
-    # 3) 选择 compose 文件列表（默认只用 docker-compose.yml）
-    #    该 compose 内含 gost + gost-ui，两者会一起部署/替换
-    local compose_files=(docker-compose.yml)
-
-    # 4) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再 up -> 失败回滚
-    #    项目名用 "gost"，compose_deploy_with_repo_switch 会对整个 stack 进行替换，
-    #    所以 gost 和 gost-ui 会一起停旧 / 起新 / 切换。
-    compose_deploy_with_repo_switch "gost" "gost" "${compose_files[@]}" || return 1
-
-    echo "✅ gost / gost-ui 已启动！正在检测 mihomo IP 以生成管理地址..."
-
-    # 5) 读取 mihomo 容器的 IPv4 / IPv6（因为 gost / gost-ui 与 mihomo 共用网络）
-    local mihomo4 mihomo6
-    mihomo4="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$mihomo_container" 2>/dev/null || true)"
-    mihomo6="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.GlobalIPv6Address}}{{end}}' "$mihomo_container" 2>/dev/null || true)"
-
-    echo
-    echo "📡 检测到的 mihomo 容器网络信息（即 gost / gost-ui 所使用的 IP）："
-    if [ -n "$mihomo4" ]; then
-        echo "  - IPv4: $mihomo4"
-    else
-        echo "  - IPv4: 未检测到（可能使用纯 IPv6 或网络未就绪）"
-    fi
-
-    if [ -n "$mihomo6" ]; then
-        echo "  - IPv6: $mihomo6"
-    else
-        echo "  - IPv6: 未检测到或未启用"
-    fi
-    echo
-
-    # 6) 给出 gost-ui 管理界面和 gost API 地址
-    #    按你的要求：
-    #    - 管理页面：http://IP:80
-    #    - API 地址：http://IP:18080/api
-    local ui_port=80
-    local api_port=18080
-
-    echo "👉 gost-ui 管理界面 / gost API 地址："
-    if [ -n "$mihomo4" ]; then
-        echo "  - Web UI (IPv4)：  http://${mihomo4}:${ui_port}/"
-        echo "  - API    (IPv4)：  http://${mihomo4}:${api_port}/api"
-    fi
-    if [ -n "$mihomo6" ]; then
-        echo "  - Web UI (IPv6)：  http://[${mihomo6}]:${ui_port}/"
-        echo "  - API    (IPv6)：  http://[${mihomo6}]:${api_port}/api"
-    fi
-
-    if [ -z "$mihomo4" ] && [ -n "$mihomo6" ]; then
-        echo "ℹ️  当前仅检测到 IPv6，可在支持 IPv6 的环境中访问上方 IPv6 地址。"
-    elif [ -z "$mihomo4" ] && [ -z "$mihomo6" ]; then
-        echo "⚠️  未能自动检测 mihomo 的 IP，请手动确认网络配置和 gost / gost-ui 监听端口。"
-    fi
-
-    # 7) 可选删除备份（带挂载检查）
-    repo_offer_delete_backup "gost" "$BAK_DIR" "gost"
-}
 
 install_lucky() {
     echo "🔧 安装 Lucky（依赖 mihomo 已安装并运行，并与 mihomo 共用网络）"
@@ -2632,8 +2546,6 @@ while true; do
         20) install_mihomo ;;
         21) install_ddnsgo ;;
         22) install_lucky ;;
-        23) install_gost ;;
-        70) migrate_docker_datadir ;;
         71) optimize_docker_logs ;;
         72) optimize_journald_to_volatile ;;
         90) create_macvlan_bridge ;;
