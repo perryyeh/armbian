@@ -1365,23 +1365,22 @@ install_librespeed() {
     # 7) 写 .env（compose 读取）
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
-librespeed4=${librespeed}
-librespeed6=${librespeed6}
-librespeedmac=${librespeedmac}
+ipv4=${librespeed}
+ipv6=${librespeed6}
+macaddress=${librespeedmac}
 EOF
 
     echo "✅ 已生成 .env："
     cat .env
     echo
 
-    # 8) 启动（无 IPv6 就只用基础 compose；有 IPv6 再叠加 override）
+    # 8) 启动：无IPv6时删除compose中的ipv6配置避免报错，统一用主compose启动
     docker rm -f librespeed >/dev/null 2>&1 || true
 
-    if [ -n "$librespeed6" ]; then
-        docker compose -f docker-compose.yml -f docker-compose.ipv6.yml up -d
-    else
-        docker compose -f docker-compose.yml up -d
+    if [ -z "$librespeed6" ]; then
+        sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
     fi
+    docker compose up -d
 
     echo "✅ LibreSpeed 已启动"
     echo "访问地址：http://${librespeed}"
