@@ -1690,9 +1690,9 @@ install_mihomo() {
     # 7) 生成 .env（compose 会用到）
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
-mihomo4=${mihomo}
-mihomo6=${mihomo6}
-mihomomac=${mihomomac}
+ipv4=${mihomo}
+ipv6=${mihomo6}
+macaddress=${mihomomac}
 EOF
 
     echo "✅ 已生成 .env 文件："
@@ -1705,18 +1705,19 @@ EOF
     fi
 
     # === 8 .env 基本校验 ===
-    required_vars=(MACVLAN_NET mihomo4 mihomomac)
-    [ "$USE_IPV6" -eq 1 ] && required_vars+=(mihomo6)
+    required_vars=(MACVLAN_NET ipv4 macaddress)
+    [ "$USE_IPV6" -eq 1 ] && required_vars+=(ipv6)
 
     env_require_vars ".env" "${required_vars[@]}" || {
         echo "⚠️ .env 校验失败，取消启动，避免断网"
         return 1
     }
 
-    # 9) 选择 compose 文件列表
-    compose_files=(docker-compose.yml)
-    if [ "$USE_IPV6" -eq 1 ] && [ -f docker-compose.ipv6.yml ]; then
-        compose_files+=(docker-compose.ipv6.yml)
+    # 9) 固定使用主compose文件（已合并双栈配置）
+    local compose_files=(docker-compose.yml)
+    # 无IPv6场景：自动删除compose中的ipv6_address配置，避免启动报错
+    if [ "$USE_IPV6" -eq 0 ]; then
+        sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
     fi
 
     # 10) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
