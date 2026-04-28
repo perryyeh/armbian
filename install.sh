@@ -1589,9 +1589,9 @@ install_mosdns() {
     # 7) 写 .env（compose 读取）
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
-mosdns4=${mosdns}
-mosdns6=${mosdns6}
-mosdnsmac=${mosdnsmac}
+ipv4=${mosdns}
+ipv6=${mosdns6}
+macaddress=${mosdnsmac}
 EOF
 
     echo "✅ 已生成 .env："
@@ -1605,18 +1605,19 @@ EOF
 
 
     # 8) .env 基本校验
-    local required_vars=(MACVLAN_NET mosdns4 mosdnsmac)
-    [ "$USE_IPV6" -eq 1 ] && required_vars+=(mosdns6)
+    local required_vars=(MACVLAN_NET ipv4 macaddress)
+    [ "$USE_IPV6" -eq 1 ] && required_vars+=(ipv6)
 
     env_require_vars ".env" "${required_vars[@]}" || {
         echo "⚠️ .env 校验失败，取消启动，避免影响现有 mosdns"
         return 1
     }
 
-    # 9) 选择 compose 文件列表
+    # 9) 固定使用主compose文件（已合并双栈配置）
     local compose_files=(docker-compose.yml)
-    if [ "$USE_IPV6" -eq 1 ] && [ -f docker-compose.ipv6.yml ]; then
-        compose_files+=(docker-compose.ipv6.yml)
+    # 无IPv6场景：自动删除compose中的ipv6_address配置，避免启动报错
+    if [ "$USE_IPV6" -eq 0 ]; then
+        sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
     fi
 
     # 10）一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
