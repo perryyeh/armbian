@@ -376,36 +376,6 @@ prompt_ipv4_last_octet() {
  echo "$v"
 }
 
-# ==============================================
-# 通用函数：获取用户自定义容器名，自动修改compose配置
-# 参数1：默认容器名（必填，比如librespeed、adguardhome）
-# 参数2：compose文件路径（可选，默认./docker-compose.yml）
-# 返回值：最终使用的容器名
-# ==============================================
-prompt_custom_container_name() {
-    local DEFAULT_NAME="$1"
-    local COMPOSE_FILE="${2:-./docker-compose.yml}"
-    local CUSTOM_NAME
-
-    # 提示用户输入，回车用默认
-    read -r -p "请输入容器名称（回车默认使用 '$DEFAULT_NAME'）: " CUSTOM_NAME
-    CUSTOM_NAME=${CUSTOM_NAME:-$DEFAULT_NAME}
-
-    # 如果输入了自定义名称，替换compose三个字段
-    if [ "$CUSTOM_NAME" != "$DEFAULT_NAME" ]; then
-        # 1. 替换services下一级的服务名称
-        sed -i "s/^  $DEFAULT_NAME:/  $CUSTOM_NAME:/" "$COMPOSE_FILE"
-        # 2. 替换container_name
-        sed -i "s/container_name: $DEFAULT_NAME/container_name: $CUSTOM_NAME/" "$COMPOSE_FILE"
-        # 3. 替换hostname
-        sed -i "s/hostname: $DEFAULT_NAME/hostname: $CUSTOM_NAME/" "$COMPOSE_FILE"
-        echo "✅ 已自定义容器名称为：$CUSTOM_NAME" >&2
-    fi
-
-    # 返回最终容器名给调用者
-    echo "$CUSTOM_NAME"
-}
-
 # 仓库更新
 repo_stage_update() {
   local name="$1"
@@ -1358,15 +1328,29 @@ install_librespeed() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 5) 仓库分阶段更新（内部会设置 WORK_DIR / NEED_SWITCH / BAK_DIR 等全局变量）
+    # 5) 自定义容器/目录名称（回车用默认librespeed）
+    local DEFAULT_CONTAINER_NAME="librespeed"
+    local CONTAINER_NAME
+    read -r -p "请输入容器名称（回车默认使用 '$DEFAULT_CONTAINER_NAME'）: " CONTAINER_NAME
+    CONTAINER_NAME=${CONTAINER_NAME:-$DEFAULT_CONTAINER_NAME}
+
+    # 6) 仓库分阶段更新：目录名使用用户输入的容器名
     local REPO_URL="https://github.com/perryyeh/librespeed.git"
-    repo_stage_update "librespeed" "$dockerapps" "$REPO_URL" "librespeed" || return 1
+    repo_stage_update "librespeed" "$dockerapps" "$REPO_URL" "$CONTAINER_NAME" || return 1
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 6) 自定义容器名称（回车用默认librespeed）
-    local CONTAINER_NAME=$(prompt_custom_container_name "librespeed")
+    # 7) 替换compose配置中的容器相关字段
+    if [ "$CONTAINER_NAME" != "$DEFAULT_CONTAINER_NAME" ]; then
+        # 1. 替换services下一级的服务名称
+        sed -i "s/^  $DEFAULT_CONTAINER_NAME:/  $CONTAINER_NAME:/" docker-compose.yml
+        # 2. 替换container_name
+        sed -i "s/container_name: $DEFAULT_CONTAINER_NAME/container_name: $CONTAINER_NAME/" docker-compose.yml
+        # 3. 替换hostname
+        sed -i "s/hostname: $DEFAULT_CONTAINER_NAME/hostname: $CONTAINER_NAME/" docker-compose.yml
+        echo "✅ 已自定义容器名称/目录为：$CONTAINER_NAME"
+    fi
 
-    # 7) 写 .env（compose 读取）
+    # 8) 写 .env（compose 读取）
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
 ipv4=${librespeed}
