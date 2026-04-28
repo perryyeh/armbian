@@ -1450,9 +1450,9 @@ install_adguardhome() {
     # 6) 写 .env（字段不变；但 confdir 用 WORK_DIR，避免 next 启动还挂旧目录）
     write_env_file "$WORK_DIR/.env" \
       "MACVLAN_NET=${SELECTED_MACVLAN}" \
-      "adguard4=${adguard}" \
-      "adguard6=${adguard6}" \
-      "adguardmac=${adguardmac}"
+      "ipv4=${adguard}" \
+      "ipv6=${adguard6}" \
+      "macaddress=${adguardmac}"
 
     echo "✅ 已生成 .env："
     cat .env
@@ -1472,21 +1472,22 @@ install_adguardhome() {
     fi
 
     # 8) .env 基本校验（统一用抽象函数）
-    local required_vars=(MACVLAN_NET adguard4 adguardmac)
-    [ "$USE_IPV6" -eq 1 ] && required_vars+=(adguard6)
+    local required_vars=(MACVLAN_NET ipv4 macaddress)
+    [ "$USE_IPV6" -eq 1 ] && required_vars+=(ipv6)
 
     env_require_vars ".env" "${required_vars[@]}" || {
         echo "⚠️ .env 校验失败，取消启动，避免影响现有 adguardhome"
         return 1
     }
 
-    # 9) 选择 compose 文件列表
+    # 9) 固定使用主compose文件（已合并双栈配置）
     local compose_files=(docker-compose.yml)
-    if [ "$USE_IPV6" -eq 1 ] && [ -f "$WORK_DIR/docker-compose.ipv6.yml" ]; then
-        compose_files+=(docker-compose.ipv6.yml)
+    # 无IPv6场景：自动删除compose中的ipv6_address配置，避免启动报错
+    if [ "$USE_IPV6" -eq 0 ]; then
+        sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
     fi
 
-    # 10) 停旧备份 → 起新 → 回滚（失败） → next->正式目录切换（若需要） → 正式目录再重建
+    # 10) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
     #     （注意：第二个参数是容器名，必须和 compose 里的 container_name 一致）
     compose_deploy_with_repo_switch "adguardhome" "adguardhome" "${compose_files[@]}" || return 1
 
