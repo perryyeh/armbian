@@ -2547,7 +2547,6 @@ while true; do
         21) install_ddnsgo ;;
         22) install_lucky ;;
         70) migrate_docker_datadir ;;
-
         71) optimize_docker_logs ;;
         72) optimize_journald_to_volatile ;;
         90) create_macvlan_bridge ;;
