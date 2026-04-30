@@ -35,7 +35,6 @@
 | 20 | 安装 mihomo                   |
 | 21 | 安装 ddnsgo                   |
 | 22 | 安装 lucky                    |
-| 45 | 安装 samba                    |
 | 70 | 迁移docker目录                  |
 | 71 | 优化docker日志                  |
 | 72 | 优化journald日志                |
