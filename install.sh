@@ -2094,8 +2094,8 @@ install_lucky() {
     # 0) 选择网络模式
     local LUCKY_NETWORK_MODE network_choice
     echo "请选择 Lucky 网络模式："
-    echo "  1) host（使用宿主机网络，适合端口直接暴露）"
-    echo "  2) macvlan（独立 LAN IP/MAC）"
+    echo "  1) host（使用宿主机网络，适合有 IPv4 + IPv6 的环境）"
+    echo "  2) macvlan（独立 LAN IP/MAC，适合只有 IPv4 的环境）"
     read -r -p "请输入选择（回车默认 host）: " network_choice
     case "$network_choice" in
         ""|"1"|"host"|"HOST")
