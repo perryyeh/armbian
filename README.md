@@ -33,9 +33,8 @@
 | 14 | 安装 AdGuardHome              |
 | 19 | 安装 mosdns                   |
 | 20 | 安装 mihomo                   |
-| 21 | 安装 ddnsgo【依赖mihomo】         |
-| 22 | 安装 lucky【依赖mihomo】          |
-| 23 | 安装 gost + gost-ui【依赖mihomo】 |
+| 21 | 安装 ddnsgo                   |
+| 22 | 安装 lucky                    |
 | 45 | 安装 samba                    |
 | 70 | 迁移docker目录                  |
 | 71 | 优化docker日志                  |
@@ -92,8 +91,6 @@ chmod +x install.sh
 ##### mihomo：解决代理和在外回家入站，入站统一收口到mihomo的ipv4+ipv6
 ##### ddnsgo：和mihomo共用ipv4+ipv6，解决域名更新问题
 ##### lucky：和mihomo共用ipv4+ipv6，解决ipv4打洞问题
-##### gost：和mihomo共用ipv4+ipv6，解决内外端口不一致问题
-
 ## 📌 注意事项
 - 默认使用ipv4计算容器的mac地址，mac地址格式类似02:*:86
 - 默认使用ipv4计算ipv6 ula地址（⚠️这不符合RFC4193，想合规可手工输入合规的ipv6 ula），生成fd10::/64（对应10.0.0.0/8）、fd17::/64（对应172.16.0.0/12）、fd19::/64（对应192.168.0.0/16）作为 IPv6 网段，如不默认则一定要手工输入ipv6 ula
