@@ -1779,19 +1779,55 @@ EOF
 }
 
 install_ddnsgo() {
-    echo "🔧 安装 ddns-go（依赖 mihomo 已安装并运行）"
+    echo "🔧 安装 ddns-go"
 
-    local mihomo_container="mihomo"
+    # 0) 选择网络模式
+    local DDNSGO_NETWORK_MODE network_choice
+    echo "请选择 ddns-go 网络模式："
+    echo "  1) host（使用宿主机网络，适合端口直接暴露）"
+    echo "  2) macvlan（独立 LAN IP/MAC）"
+    read -r -p "请输入选择（回车默认 host）: " network_choice
+    case "$network_choice" in
+        ""|"1"|"host"|"HOST")
+            DDNSGO_NETWORK_MODE="host"
+            ;;
+        "2"|"macvlan"|"MACVLAN")
+            DDNSGO_NETWORK_MODE="macvlan"
+            ;;
+        *)
+            echo "❌ 无效选择：$network_choice"
+            return 1
+            ;;
+    esac
+    echo "📡 ddns-go 网络模式：$DDNSGO_NETWORK_MODE"
 
-    # 0) 检查 mihomo 是否在运行（network_mode=container:mihomo 需要它是 running 状态）
-    if ! docker ps --format '{{.Names}}' | grep -qx "$mihomo_container"; then
-        echo "❌ 未检测到正在运行的 mihomo 容器（容器名：$mihomo_container）。"
-        echo "   ddns-go 计划与 mihomo 共用网络"
-        echo "   请先运行 install_mihomo 安装并启动 mihomo 再继续。"
-        return 1
+    # 1) macvlan 模式才选择 macvlan 并计算独立 IP/MAC
+    local ddnsgo_ip="" ddnsgo6="" ddnsgomac="" USE_IPV6=0
+    if [ "$DDNSGO_NETWORK_MODE" = "macvlan" ]; then
+        select_macvlan_or_exit
+        case $? in
+          0) ;;
+          2) return 0 ;;
+          *) return 1 ;;
+        esac
+
+        local ddnsgo_last
+        ddnsgo_last="$(prompt_ipv4_last_octet \
+          "请输入 ddns-go IPv4 最后一段（1-254，回车默认 198）: " 198)" || return 1
+
+        calculate_ip_mac "$ddnsgo_last"
+        ddnsgo_ip="$calculated_ip"
+        ddnsgo6="$calculated_ip6"
+        ddnsgomac="$calculated_mac"
+
+        if macvlan_ipv6_enabled "$SELECTED_MACVLAN"; then
+            USE_IPV6=1
+        fi
+    else
+        echo "⚠️ host 模式会直接占用宿主机端口，请确认 9876 及 ddns-go 内部配置的端口没有冲突。"
     fi
 
-    # 1) 输入目录（回车退出）
+    # 2) 输入目录（回车退出）
     read -r -p "即将安装 ddns-go，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
     if [ -z "$dockerapps" ]; then
         echo "✅ 已退出 ddns-go 安装。"
@@ -1801,21 +1837,31 @@ install_ddnsgo() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 2) 自定义容器/目录名称（回车用默认ddnsgo）
+    # 3) 自定义容器/目录名称（回车用默认ddnsgo）
+    local DEFAULT_SERVICE_NAME="ddns-go"
     local DEFAULT_CONTAINER_NAME="ddnsgo"
     local CONTAINER_NAME
     read -r -p "请输入容器名称（回车默认使用 '$DEFAULT_CONTAINER_NAME'）: " CONTAINER_NAME
     CONTAINER_NAME=${CONTAINER_NAME:-$DEFAULT_CONTAINER_NAME}
 
-    # 3) repo 分阶段更新
+    # 4) repo 分阶段更新：目录名使用用户输入的容器名
     REPO_URL="https://github.com/perryyeh/ddnsgo.git"
     repo_stage_update "ddnsgo" "$dockerapps" "$REPO_URL" "$CONTAINER_NAME" || return 1
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 4) 替换compose配置中的容器相关字段
+    # 5) 根据网络模式选择 compose 模板，并复制为正式 docker-compose.yml
+    local compose_template="docker-compose.${DDNSGO_NETWORK_MODE}.yml"
+    if [ ! -f "$compose_template" ]; then
+        echo "❌ 缺少 compose 模板：$compose_template"
+        return 1
+    fi
+    cp "$compose_template" docker-compose.yml || return 1
+    echo "✅ 已选择 compose 模板：$compose_template -> docker-compose.yml"
+
+    # 6) 替换compose配置中的容器相关字段
     if [ "$CONTAINER_NAME" != "$DEFAULT_CONTAINER_NAME" ]; then
-        # 1. 替换services下一级的服务名称
-        sed -i "s/^  $DEFAULT_CONTAINER_NAME:/  $CONTAINER_NAME:/" docker-compose.yml
+        # 1. 替换services下一级的服务名称（ddns-go 默认服务名带连字符）
+        sed -i "s/^  $DEFAULT_SERVICE_NAME:/  $CONTAINER_NAME:/" docker-compose.yml
         # 2. 替换container_name
         sed -i "s/container_name: $DEFAULT_CONTAINER_NAME/container_name: $CONTAINER_NAME/" docker-compose.yml
         # 3. 替换hostname
@@ -1823,54 +1869,71 @@ install_ddnsgo() {
         echo "✅ 已自定义容器名称/目录为：$CONTAINER_NAME"
     fi
 
-    # 5) 选择 compose 文件列表（默认只用 docker-compose.yml）
+    # 7) macvlan 模式写 .env；host 模式清掉旧 .env，避免误导
+    if [ "$DDNSGO_NETWORK_MODE" = "macvlan" ]; then
+        write_env_file "$WORK_DIR/.env" \
+          "MACVLAN_NET=${SELECTED_MACVLAN}" \
+          "ipv4=${ddnsgo_ip}" \
+          "ipv6=${ddnsgo6}" \
+          "macaddress=${ddnsgomac}"
+
+        echo "✅ 已生成 .env："
+        cat .env
+        echo
+
+        local required_vars=(MACVLAN_NET ipv4 macaddress)
+        [ "$USE_IPV6" -eq 1 ] && required_vars+=(ipv6)
+
+        env_require_vars ".env" "${required_vars[@]}" || {
+            echo "⚠️ .env 校验失败，取消启动，避免影响现有 ddns-go"
+            return 1
+        }
+
+        # 无 IPv6 场景：自动删除 compose 中的 ipv6_address 配置，避免启动报错
+        if [ "$USE_IPV6" -eq 0 ]; then
+            sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
+        fi
+    else
+        rm -f "$WORK_DIR/.env"
+    fi
+
+    # 8) 选择 compose 文件列表（默认只用 docker-compose.yml）
     local compose_files=(docker-compose.yml)
 
-    # 6) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
+    # 9) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
     compose_deploy_with_repo_switch "ddnsgo" "$CONTAINER_NAME" "${compose_files[@]}" || return 1
 
-    echo "✅ ddns-go 已启动！正在检测 mihomo IP 以生成管理地址..."
+    # 10) ddns-go 管理界面地址（默认监听 9876）
+    local ddns_port=9876
+    echo "✅ ddns-go 已启动"
+    echo "网络模式：${DDNSGO_NETWORK_MODE}"
     echo "容器名称：${CONTAINER_NAME}"
 
-    # 5) 读取 mihomo 容器的 IPv4 / IPv6
-    local mihomo4 mihomo6
-    mihomo4="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$mihomo_container" 2>/dev/null || true)"
-    mihomo6="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.GlobalIPv6Address}}{{end}}' "$mihomo_container" 2>/dev/null || true)"
-
-    echo
-    echo "📡 检测到的 mihomo 容器网络信息："
-    if [ -n "$mihomo4" ]; then
-        echo "  - IPv4: $mihomo4"
+    if [ "$DDNSGO_NETWORK_MODE" = "macvlan" ]; then
+        echo "macvlan 网络：${SELECTED_MACVLAN}"
+        echo "IPv4 地址：${ddnsgo_ip}"
+        echo "MAC 地址：${ddnsgomac}"
+        echo "访问地址：http://${ddnsgo_ip}:${ddns_port}/"
+        if [ "$USE_IPV6" -eq 1 ] && [ -n "$ddnsgo6" ]; then
+            echo "IPv6 地址：${ddnsgo6}"
+            echo "IPv6 访问：http://[${ddnsgo6}]:${ddns_port}/"
+        else
+            echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
+        fi
     else
-        echo "  - IPv4: 未检测到（可能使用纯 IPv6 或网络未就绪）"
+        local host_ip
+        host_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+        [ -z "$host_ip" ] && host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+        if [ -n "$host_ip" ]; then
+            echo "访问地址：http://${host_ip}:${ddns_port}/"
+        else
+            echo "访问地址：http://<宿主机IP>:${ddns_port}/"
+        fi
+        echo "⚠️ host 模式会直接占用宿主机端口，请确认 9876 及 ddns-go 内部配置的端口没有冲突。"
     fi
 
-    if [ -n "$mihomo6" ]; then
-        echo "  - IPv6: $mihomo6"
-    else
-        echo "  - IPv6: 未检测到或未启用"
-    fi
-    echo
-
-    # 6) 给出 ddns-go 管理界面地址（默认监听 9876）
-    local ddns_port=9876
-
-    echo "👉 ddns-go 管理界面地址（请在浏览器中打开）："
-    if [ -n "$mihomo4" ]; then
-        echo "  - IPv4：  http://${mihomo4}:${ddns_port}/"
-    fi
-    if [ -n "$mihomo6" ]; then
-        echo "  - IPv6：  http://[${mihomo6}]:${ddns_port}/"
-    fi
-
-    if [ -z "$mihomo4" ] && [ -n "$mihomo6" ]; then
-        echo "ℹ️  当前仅检测到 IPv6，可在支持 IPv6 的环境中访问上方 IPv6 地址。"
-    elif [ -z "$mihomo4" ] && [ -z "$mihomo6" ]; then
-        echo "⚠️  未能自动检测 mihomo 的 IP，请手动确认网络配置和 ddns-go 监听端口。"
-    fi
-
-    # 7) 可选删除备份（带挂载检查）
-    repo_offer_delete_backup "ddnsgo" "$BAK_DIR" "ddnsgo"
+    # 11) 可选删除备份（带挂载检查）
+    repo_offer_delete_backup "ddnsgo" "$BAK_DIR" "$CONTAINER_NAME"
 }
 
 
