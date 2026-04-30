@@ -1875,19 +1875,55 @@ install_ddnsgo() {
 
 
 install_lucky() {
-    echo "🔧 安装 Lucky（依赖 mihomo 已安装并运行，并与 mihomo 共用网络）"
+    echo "🔧 安装 Lucky"
 
-    local mihomo_container="mihomo"
+    # 0) 选择网络模式
+    local LUCKY_NETWORK_MODE network_choice
+    echo "请选择 Lucky 网络模式："
+    echo "  1) host（使用宿主机网络，适合端口直接暴露）"
+    echo "  2) macvlan（独立 LAN IP/MAC）"
+    read -r -p "请输入选择（回车默认 host）: " network_choice
+    case "$network_choice" in
+        ""|"1"|"host"|"HOST")
+            LUCKY_NETWORK_MODE="host"
+            ;;
+        "2"|"macvlan"|"MACVLAN")
+            LUCKY_NETWORK_MODE="macvlan"
+            ;;
+        *)
+            echo "❌ 无效选择：$network_choice"
+            return 1
+            ;;
+    esac
+    echo "📡 Lucky 网络模式：$LUCKY_NETWORK_MODE"
 
-    # 0) 检查 mihomo 是否在运行
-    if ! docker ps --format '{{.Names}}' | grep -qx "$mihomo_container"; then
-        echo "❌ 未检测到正在运行的 mihomo 容器（容器名：$mihomo_container）。"
-        echo "   Lucky 计划与 mihomo 共用网络 (network_mode=container:mihomo)。"
-        echo "   请先运行 install_mihomo 安装并启动 mihomo 再继续。"
-        return 1
+    # 1) macvlan 模式才选择 macvlan 并计算独立 IP/MAC
+    local lucky="" lucky6="" luckymac="" USE_IPV6=0
+    if [ "$LUCKY_NETWORK_MODE" = "macvlan" ]; then
+        select_macvlan_or_exit
+        case $? in
+          0) ;;
+          2) return 0 ;;
+          *) return 1 ;;
+        esac
+
+        local lucky_last
+        lucky_last="$(prompt_ipv4_last_octet \
+          "请输入 Lucky IPv4 最后一段（1-254，回车默认 166）: " 166)" || return 1
+
+        calculate_ip_mac "$lucky_last"
+        lucky="$calculated_ip"
+        lucky6="$calculated_ip6"
+        luckymac="$calculated_mac"
+
+        if macvlan_ipv6_enabled "$SELECTED_MACVLAN"; then
+            USE_IPV6=1
+        fi
+    else
+        echo "⚠️ host 模式会直接占用宿主机端口，请确认 16601 及 Lucky 内部配置的端口没有冲突。"
     fi
 
-    # 1) 输入目录
+    # 2) 输入目录
     read -r -p "即将安装 Lucky，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
     if [ -z "$dockerapps" ]; then
         echo "✅ 已退出 Lucky 安装。"
@@ -1897,18 +1933,27 @@ install_lucky() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 2) 自定义容器/目录名称（回车用默认lucky）
+    # 3) 自定义容器/目录名称（回车用默认lucky）
     local DEFAULT_CONTAINER_NAME="lucky"
     local CONTAINER_NAME
     read -r -p "请输入容器名称（回车默认使用 '$DEFAULT_CONTAINER_NAME'）: " CONTAINER_NAME
     CONTAINER_NAME=${CONTAINER_NAME:-$DEFAULT_CONTAINER_NAME}
 
-    # 3) repo 更新
+    # 4) repo 更新：目录名使用用户输入的容器名
     REPO_URL="https://github.com/perryyeh/lucky.git"
     repo_stage_update "lucky" "$dockerapps" "$REPO_URL" "$CONTAINER_NAME" || return 1
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 4) 替换compose配置中的容器相关字段
+    # 5) 根据网络模式选择 compose 模板，并复制为正式 docker-compose.yml
+    local compose_template="docker-compose.${LUCKY_NETWORK_MODE}.yml"
+    if [ ! -f "$compose_template" ]; then
+        echo "❌ 缺少 compose 模板：$compose_template"
+        return 1
+    fi
+    cp "$compose_template" docker-compose.yml || return 1
+    echo "✅ 已选择 compose 模板：$compose_template -> docker-compose.yml"
+
+    # 6) 替换compose配置中的容器相关字段
     if [ "$CONTAINER_NAME" != "$DEFAULT_CONTAINER_NAME" ]; then
         # 1. 替换services下一级的服务名称
         sed -i "s/^  $DEFAULT_CONTAINER_NAME:/  $CONTAINER_NAME:/" docker-compose.yml
@@ -1919,57 +1964,71 @@ install_lucky() {
         echo "✅ 已自定义容器名称/目录为：$CONTAINER_NAME"
     fi
 
-    # 5) compose 文件
+    # 7) macvlan 模式写 .env；host 模式清掉旧 .env，避免误导
+    if [ "$LUCKY_NETWORK_MODE" = "macvlan" ]; then
+        write_env_file "$WORK_DIR/.env" \
+          "MACVLAN_NET=${SELECTED_MACVLAN}" \
+          "ipv4=${lucky}" \
+          "ipv6=${lucky6}" \
+          "macaddress=${luckymac}"
+
+        echo "✅ 已生成 .env："
+        cat .env
+        echo
+
+        local required_vars=(MACVLAN_NET ipv4 macaddress)
+        [ "$USE_IPV6" -eq 1 ] && required_vars+=(ipv6)
+
+        env_require_vars ".env" "${required_vars[@]}" || {
+            echo "⚠️ .env 校验失败，取消启动，避免影响现有 lucky"
+            return 1
+        }
+
+        # 无 IPv6 场景：自动删除 compose 中的 ipv6_address 配置，避免启动报错
+        if [ "$USE_IPV6" -eq 0 ]; then
+            sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
+        fi
+    else
+        rm -f "$WORK_DIR/.env"
+    fi
+
+    # 8) compose 文件
     local compose_files=(docker-compose.yml)
 
-    # 6) 部署
+    # 9) 部署
     compose_deploy_with_repo_switch "lucky" "$CONTAINER_NAME" "${compose_files[@]}" || return 1
 
-    echo "✅ Lucky 已启动！正在检测 mihomo IP 以生成访问地址..."
+    # 10) Lucky Web 面板
+    local lucky_port=16601
+    echo "✅ Lucky 已启动"
+    echo "网络模式：${LUCKY_NETWORK_MODE}"
     echo "容器名称：${CONTAINER_NAME}"
 
-    # 5) 获取 mihomo IP
-    local mihomo4 mihomo6
-    mihomo4="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$mihomo_container" 2>/dev/null || true)"
-    mihomo6="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.GlobalIPv6Address}}{{end}}' "$mihomo_container" 2>/dev/null || true)"
-
-    echo
-    echo "📡 mihomo 容器网络信息（Lucky 共用该 IP）："
-
-    if [ -n "$mihomo4" ]; then
-        echo "  - IPv4: $mihomo4"
+    if [ "$LUCKY_NETWORK_MODE" = "macvlan" ]; then
+        echo "macvlan 网络：${SELECTED_MACVLAN}"
+        echo "IPv4 地址：${lucky}"
+        echo "MAC 地址：${luckymac}"
+        echo "访问地址：http://${lucky}:${lucky_port}/"
+        if [ "$USE_IPV6" -eq 1 ] && [ -n "$lucky6" ]; then
+            echo "IPv6 地址：${lucky6}"
+            echo "IPv6 访问：http://[${lucky6}]:${lucky_port}/"
+        else
+            echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
+        fi
     else
-        echo "  - IPv4: 未检测到"
+        local host_ip
+        host_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+        [ -z "$host_ip" ] && host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+        if [ -n "$host_ip" ]; then
+            echo "访问地址：http://${host_ip}:${lucky_port}/"
+        else
+            echo "访问地址：http://<宿主机IP>:${lucky_port}/"
+        fi
+        echo "⚠️ host 模式会直接占用宿主机端口，请确认 16601 及 Lucky 内部配置的端口没有冲突。"
     fi
 
-    if [ -n "$mihomo6" ]; then
-        echo "  - IPv6: $mihomo6"
-    else
-        echo "  - IPv6: 未检测到或未启用"
-    fi
-    echo
-
-    # 6) Lucky Web 面板
-    local lucky_port=16601
-
-    echo "👉 Lucky 管理界面："
-
-    if [ -n "$mihomo4" ]; then
-        echo "  - Web UI (IPv4)： http://${mihomo4}:${lucky_port}/"
-    fi
-
-    if [ -n "$mihomo6" ]; then
-        echo "  - Web UI (IPv6)： http://[${mihomo6}]:${lucky_port}/"
-    fi
-
-    if [ -z "$mihomo4" ] && [ -n "$mihomo6" ]; then
-        echo "ℹ️  当前仅检测到 IPv6，可通过 IPv6 地址访问 Lucky。"
-    elif [ -z "$mihomo4" ] && [ -z "$mihomo6" ]; then
-        echo "⚠️  未能自动检测 mihomo 的 IP，请手动确认 Lucky 监听端口。"
-    fi
-
-    # 7) 可选删除备份
-    repo_offer_delete_backup "lucky" "$BAK_DIR" "lucky"
+    # 11) 可选删除备份
+    repo_offer_delete_backup "lucky" "$BAK_DIR" "$CONTAINER_NAME"
 }
 
 install_portainer() {
