@@ -227,6 +227,89 @@ write_env_file() {
   done
 }
 
+# 全局保存用户选择的 dockerapps 存储目录
+SELECTED_DOCKERAPPS_DIR=""
+
+discover_dockerapps_dirs() {
+  # 仅扫描常见挂载点，避免全盘 find 过慢或产生大量权限噪音
+  local search_roots=()
+  local root
+
+  for root in /data /vol* /volume* /mnt /srv /opt; do
+    [ -d "$root" ] && search_roots+=("$root")
+  done
+
+  [ ${#search_roots[@]} -eq 0 ] && return 0
+
+  find "${search_roots[@]}" -maxdepth 4 -type d -name dockerapps 2>/dev/null | sort -u
+}
+
+select_dockerapps_dir() {
+  # 用法：select_dockerapps_dir "服务名"
+  # 返回：0=已选择，2=用户回车退出，1=错误
+  local app_name="$1"
+  local scan_choice manual_dir choice dir
+  local -a dockerapps_dirs=()
+
+  SELECTED_DOCKERAPPS_DIR=""
+
+  echo "即将安装 ${app_name}，请选择存储目录。"
+  read -r -p "是否扫描本机已有 dockerapps 目录？[Y/n]: " scan_choice
+
+  case "$scan_choice" in
+    ""|"y"|"Y"|"yes"|"YES")
+      echo "🔎 正在扫描已有 dockerapps 目录..."
+      while IFS= read -r dir; do
+        [ -n "$dir" ] && dockerapps_dirs+=("$dir")
+      done < <(discover_dockerapps_dirs)
+
+      if [ ${#dockerapps_dirs[@]} -gt 0 ]; then
+        echo "发现以下 dockerapps 目录："
+        for i in "${!dockerapps_dirs[@]}"; do
+          echo "  $((i + 1))) ${dockerapps_dirs[$i]}"
+        done
+
+        while true; do
+          read -r -p "请选择目录序号，输入 m 手工输入，回车退出: " choice
+          if [ -z "$choice" ]; then
+            return 2
+          fi
+          case "$choice" in
+            "m"|"M")
+              break
+              ;;
+            *)
+              if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#dockerapps_dirs[@]}" ]; then
+                SELECTED_DOCKERAPPS_DIR="${dockerapps_dirs[$((choice - 1))]}"
+                echo "✅ 使用已有目录：${SELECTED_DOCKERAPPS_DIR}"
+                return 0
+              fi
+              echo "❌ 无效选择：$choice"
+              ;;
+          esac
+        done
+      else
+        echo "⚠️ 未发现已有 dockerapps 目录。"
+      fi
+      ;;
+    "n"|"N"|"no"|"NO")
+      ;;
+    *)
+      echo "❌ 无效选择：$scan_choice"
+      return 1
+      ;;
+  esac
+
+  read -r -p "请输入存储目录（例如 /data/dockerapps），回车退出: " manual_dir
+  if [ -z "$manual_dir" ]; then
+    return 2
+  fi
+
+  SELECTED_DOCKERAPPS_DIR="$manual_dir"
+  echo "✅ 使用手工输入目录：${SELECTED_DOCKERAPPS_DIR}"
+  return 0
+}
+
 calculate_ip_mac() {
   local last_octet=$1
   local net_name="${2:-${SELECTED_MACVLAN:-macvlan}}"
@@ -1318,12 +1401,14 @@ install_librespeed() {
     librespeed6="$calculated_ip6"
     librespeedmac="$calculated_mac"
 
-    # 4) 输入目录（回车退出）
-    read -r -p "即将安装 LibreSpeed，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
-    if [ -z "$dockerapps" ]; then
-        echo "✅ 已退出 LibreSpeed 安装。"
-        return 0
-    fi
+    # 4) 选择存储目录（回车退出）
+    local dockerapps
+    select_dockerapps_dir "LibreSpeed"
+    case $? in
+      0) dockerapps="$SELECTED_DOCKERAPPS_DIR" ;;
+      2) echo "✅ 已退出 LibreSpeed 安装。"; return 0 ;;
+      *) return 1 ;;
+    esac
 
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
@@ -1417,13 +1502,14 @@ install_adguardhome() {
     adguardmac="$calculated_mac"
     gateway="$calculated_gateway"
 
-    # 3) 输入目录（回车退出）
+    # 3) 选择存储目录（回车退出）
     local dockerapps
-    read -r -p "即将安装 AdGuardHome，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
-    if [ -z "$dockerapps" ]; then
-        echo "✅ 已退出 AdGuardHome 安装。"
-        return 0
-    fi
+    select_dockerapps_dir "AdGuardHome"
+    case $? in
+      0) dockerapps="$SELECTED_DOCKERAPPS_DIR" ;;
+      2) echo "✅ 已退出 AdGuardHome 安装。"; return 0 ;;
+      *) return 1 ;;
+    esac
 
     mkdir -p "${dockerapps}/adguardwork" "${dockerapps}" || return 1
 
@@ -1568,13 +1654,14 @@ install_mosdns() {
         USE_IPV6=1
     fi
 
-    # 4) 输入目录（回车退出）
+    # 4) 选择存储目录（回车退出）
     local dockerapps
-    read -r -p "即将安装 mosdns，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
-    if [ -z "$dockerapps" ]; then
-        echo "✅ 已退出 mosdns 安装。"
-        return 0
-    fi
+    select_dockerapps_dir "mosdns"
+    case $? in
+      0) dockerapps="$SELECTED_DOCKERAPPS_DIR" ;;
+      2) echo "✅ 已退出 mosdns 安装。"; return 0 ;;
+      *) return 1 ;;
+    esac
     mkdir -p "$dockerapps" || return 1
 
     # 5) 自定义容器/目录名称（回车用默认mosdns）
@@ -1715,12 +1802,14 @@ install_mihomo() {
         echo "⚠️ host 模式会直接占用宿主机端口，请确认 7890/7891/7892/9090 等端口没有冲突。"
     fi
 
-    # 2) 输入目录（回车退出）
-    read -r -p "即将安装 mihomo，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
-    if [ -z "$dockerapps" ]; then
-        echo "✅ 已退出 mihomo 安装。"
-        return 0
-    fi
+    # 2) 选择存储目录（回车退出）
+    local dockerapps
+    select_dockerapps_dir "mihomo"
+    case $? in
+      0) dockerapps="$SELECTED_DOCKERAPPS_DIR" ;;
+      2) echo "✅ 已退出 mihomo 安装。"; return 0 ;;
+      *) return 1 ;;
+    esac
 
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
@@ -1880,12 +1969,14 @@ install_ddnsgo() {
         echo "⚠️ host 模式会直接占用宿主机端口，请确认 9876 及 ddns-go 内部配置的端口没有冲突。"
     fi
 
-    # 2) 输入目录（回车退出）
-    read -r -p "即将安装 ddns-go，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
-    if [ -z "$dockerapps" ]; then
-        echo "✅ 已退出 ddns-go 安装。"
-        return 0
-    fi
+    # 2) 选择存储目录（回车退出）
+    local dockerapps
+    select_dockerapps_dir "ddns-go"
+    case $? in
+      0) dockerapps="$SELECTED_DOCKERAPPS_DIR" ;;
+      2) echo "✅ 已退出 ddns-go 安装。"; return 0 ;;
+      *) return 1 ;;
+    esac
 
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
@@ -2039,12 +2130,14 @@ install_lucky() {
         echo "⚠️ host 模式会直接占用宿主机端口，请确认 16601 及 Lucky 内部配置的端口没有冲突。"
     fi
 
-    # 2) 输入目录
-    read -r -p "即将安装 Lucky，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
-    if [ -z "$dockerapps" ]; then
-        echo "✅ 已退出 Lucky 安装。"
-        return 0
-    fi
+    # 2) 选择存储目录（回车退出）
+    local dockerapps
+    select_dockerapps_dir "Lucky"
+    case $? in
+      0) dockerapps="$SELECTED_DOCKERAPPS_DIR" ;;
+      2) echo "✅ 已退出 Lucky 安装。"; return 0 ;;
+      *) return 1 ;;
+    esac
 
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
@@ -2148,9 +2241,17 @@ install_lucky() {
 }
 
 install_portainer() {
-    read -p "即将安装portainer，请输入存储目录(例如 /data/dockerapps): " dockerapps
+    local dockerapps
+    select_dockerapps_dir "portainer"
+    case $? in
+      0) dockerapps="$SELECTED_DOCKERAPPS_DIR" ;;
+      2) echo "✅ 已退出 portainer 安装。"; return 0 ;;
+      *) return 1 ;;
+    esac
+
+    mkdir -p "${dockerapps}/portainer" || return 1
     docker run -d -p 9443:9443 --name=portainer --restart=always \
-    -v /var/run/docker.sock:/var/run/docker.sock -v ${dockerapps}/portainer:/data portainer/portainer-ce:lts
+    -v /var/run/docker.sock:/var/run/docker.sock -v "${dockerapps}/portainer:/data" portainer/portainer-ce:lts
 }
 
 # ========== 删除 docker macvlan 网络 ==========
