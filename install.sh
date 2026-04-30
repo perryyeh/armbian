@@ -1825,14 +1825,21 @@ install_mihomo() {
     repo_stage_update "mihomo" "$dockerapps" "$REPO_URL" "$CONTAINER_NAME" || return 1
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 5) 根据网络模式选择 compose 模板，并复制为正式 docker-compose.yml
+    # 5) 根据网络模式选择 compose/config 模板，并复制为正式文件
     local compose_template="docker-compose.${MIHOMO_NETWORK_MODE}.yml"
+    local config_template="config.${MIHOMO_NETWORK_MODE}.yaml"
     if [ ! -f "$compose_template" ]; then
         echo "❌ 缺少 compose 模板：$compose_template"
         return 1
     fi
+    if [ ! -f "$config_template" ]; then
+        echo "❌ 缺少 mihomo 配置模板：$config_template"
+        return 1
+    fi
     cp "$compose_template" docker-compose.yml || return 1
+    cp "$config_template" config.yaml || return 1
     echo "✅ 已选择 compose 模板：$compose_template -> docker-compose.yml"
+    echo "✅ 已选择 mihomo 配置模板：$config_template -> config.yaml"
 
     # 6) 替换compose配置中的容器相关字段
     if [ "$CONTAINER_NAME" != "$DEFAULT_CONTAINER_NAME" ]; then
