@@ -1666,34 +1666,56 @@ EOF
 
 install_mihomo() {
 
-    echo "🔧 安装 mihomo（需要选择 macvlan 网络）"
+    echo "🔧 安装 mihomo"
 
-    # 1) 选择 macvlan（回车退出）
-    select_macvlan_or_exit
-    case $? in
-      0) ;;
-      2) return 0 ;;
-      *) return 1 ;;
+    # 0) 选择网络模式
+    local MIHOMO_NETWORK_MODE network_choice
+    echo "请选择 mihomo 网络模式："
+    echo "  1) host（使用宿主机网络，适合旁路由/代理端口直接暴露）"
+    echo "  2) macvlan（独立 LAN IP/MAC）"
+    read -r -p "请输入选择（回车默认 macvlan）: " network_choice
+    case "$network_choice" in
+        ""|"2"|"macvlan"|"MACVLAN")
+            MIHOMO_NETWORK_MODE="macvlan"
+            ;;
+        "1"|"host"|"HOST")
+            MIHOMO_NETWORK_MODE="host"
+            ;;
+        *)
+            echo "❌ 无效选择：$network_choice"
+            return 1
+            ;;
     esac
+    echo "📡 mihomo 网络模式：$MIHOMO_NETWORK_MODE"
 
-    # 2) 选择 mihomo IPv4 最后一段（回车默认 120）
-    local mihomo_last
-    mihomo_last="$(prompt_ipv4_last_octet \
-      "请输入 mihomo IPv4 最后一段（1-254，回车默认 120）: " 120)" || return 1
+    # 1) macvlan 模式才选择 macvlan 并计算独立 IP/MAC/Gateway
+    local mihomo="" mihomo6="" mihomomac="" gateway="" USE_IPV6=0
+    if [ "$MIHOMO_NETWORK_MODE" = "macvlan" ]; then
+        select_macvlan_or_exit
+        case $? in
+          0) ;;
+          2) return 0 ;;
+          *) return 1 ;;
+        esac
 
-    # 3) 计算 IP / IPv6 / MAC / Gateway（基于 SELECTED_MACVLAN）
-    calculate_ip_mac "$mihomo_last"
-    mihomo=$calculated_ip
-    mihomo6=$calculated_ip6
-    mihomomac=$calculated_mac
-    gateway=$calculated_gateway
+        local mihomo_last
+        mihomo_last="$(prompt_ipv4_last_octet \
+          "请输入 mihomo IPv4 最后一段（1-254，回车默认 120）: " 120)" || return 1
 
-    USE_IPV6=0
-    if docker network inspect "$SELECTED_MACVLAN" | jq -e '.[0].EnableIPv6==true and (.[0].IPAM.Config[]?.Subnet|test(":"))' >/dev/null 2>&1; then
-      USE_IPV6=1
+        calculate_ip_mac "$mihomo_last"
+        mihomo="$calculated_ip"
+        mihomo6="$calculated_ip6"
+        mihomomac="$calculated_mac"
+        gateway="$calculated_gateway"
+
+        if macvlan_ipv6_enabled "$SELECTED_MACVLAN"; then
+            USE_IPV6=1
+        fi
+    else
+        echo "⚠️ host 模式会直接占用宿主机端口，请确认 7890/7891/7892/9090 等端口没有冲突。"
     fi
 
-    # 4) 输入目录（回车退出）
+    # 2) 输入目录（回车退出）
     read -r -p "即将安装 mihomo，请输入存储目录(例如 /data/dockerapps)，回车退出: " dockerapps
     if [ -z "$dockerapps" ]; then
         echo "✅ 已退出 mihomo 安装。"
@@ -1703,18 +1725,27 @@ install_mihomo() {
     mkdir -p "$dockerapps" || return 1
     cd "$dockerapps" || return 1
 
-    # 5) 自定义容器/目录名称（回车用默认mihomo）
+    # 3) 自定义容器/目录名称（回车用默认mihomo）
     local DEFAULT_CONTAINER_NAME="mihomo"
     local CONTAINER_NAME
     read -r -p "请输入容器名称（回车默认使用 '$DEFAULT_CONTAINER_NAME'）: " CONTAINER_NAME
     CONTAINER_NAME=${CONTAINER_NAME:-$DEFAULT_CONTAINER_NAME}
 
-    # 6) repo 分阶段更新（内部会设置 WORK_DIR / NEED_SWITCH / BAK_DIR 等全局变量）
+    # 4) repo 分阶段更新（内部会设置 WORK_DIR / NEED_SWITCH / BAK_DIR 等全局变量）
     REPO_URL="https://github.com/perryyeh/mihomo.git"
     repo_stage_update "mihomo" "$dockerapps" "$REPO_URL" "$CONTAINER_NAME" || return 1
     cd "$WORK_DIR" || { echo "❌ 进入目录失败：$WORK_DIR"; return 1; }
 
-    # 7) 替换compose配置中的容器相关字段
+    # 5) 根据网络模式选择 compose 模板，并复制为正式 docker-compose.yml
+    local compose_template="docker-compose.${MIHOMO_NETWORK_MODE}.yml"
+    if [ ! -f "$compose_template" ]; then
+        echo "❌ 缺少 compose 模板：$compose_template"
+        return 1
+    fi
+    cp "$compose_template" docker-compose.yml || return 1
+    echo "✅ 已选择 compose 模板：$compose_template -> docker-compose.yml"
+
+    # 6) 替换compose配置中的容器相关字段
     if [ "$CONTAINER_NAME" != "$DEFAULT_CONTAINER_NAME" ]; then
         # 1. 替换services下一级的服务名称
         sed -i "s/^  $DEFAULT_CONTAINER_NAME:/  $CONTAINER_NAME:/" docker-compose.yml
@@ -1725,57 +1756,79 @@ install_mihomo() {
         echo "✅ 已自定义容器名称/目录为：$CONTAINER_NAME"
     fi
 
-    # 8) 替换 config.yaml 里的网关
-    if [ -f "config.yaml" ] && [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
+    # 7) macvlan 模式替换 config.yaml 里的网关；host 模式保持仓库默认配置
+    if [ "$MIHOMO_NETWORK_MODE" = "macvlan" ] && [ -f "config.yaml" ] && [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
         sed -i "s/10.0.0.1/${gateway}/g" config.yaml
     fi
 
-    # 9) 生成 .env（compose 会用到）
-    cat > .env <<EOF
-MACVLAN_NET=${SELECTED_MACVLAN}
-ipv4=${mihomo}
-ipv6=${mihomo6}
-macaddress=${mihomomac}
-EOF
+    # 8) macvlan 模式写 .env；host 模式清掉旧 .env，避免误导
+    if [ "$MIHOMO_NETWORK_MODE" = "macvlan" ]; then
+        write_env_file "$WORK_DIR/.env" \
+          "MACVLAN_NET=${SELECTED_MACVLAN}" \
+          "ipv4=${mihomo}" \
+          "ipv6=${mihomo6}" \
+          "macaddress=${mihomomac}"
 
-    echo "✅ 已生成 .env 文件："
-    cat .env
-    echo
+        echo "✅ 已生成 .env 文件："
+        cat .env
+        echo
 
-    if [ "$USE_IPV6" -eq 1 ] && [ -z "$mihomo6" ]; then
-        echo "❌ 该 macvlan 网络启用了 IPv6，但未能计算出 mihomo6（可能 IPv6 子网解析失败）"
-        return 1
+        if [ "$USE_IPV6" -eq 1 ] && [ -z "$mihomo6" ]; then
+            echo "❌ 该 macvlan 网络启用了 IPv6，但未能计算出 mihomo6（可能 IPv6 子网解析失败）"
+            return 1
+        fi
+
+        local required_vars=(MACVLAN_NET ipv4 macaddress)
+        [ "$USE_IPV6" -eq 1 ] && required_vars+=(ipv6)
+
+        env_require_vars ".env" "${required_vars[@]}" || {
+            echo "⚠️ .env 校验失败，取消启动，避免断网"
+            return 1
+        }
+
+        # 无 IPv6 场景：自动删除 compose 中的 ipv6_address 配置，避免启动报错
+        if [ "$USE_IPV6" -eq 0 ]; then
+            sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
+        fi
+    else
+        rm -f "$WORK_DIR/.env"
     fi
 
-    # === 8 .env 基本校验 ===
-    required_vars=(MACVLAN_NET ipv4 macaddress)
-    [ "$USE_IPV6" -eq 1 ] && required_vars+=(ipv6)
-
-    env_require_vars ".env" "${required_vars[@]}" || {
-        echo "⚠️ .env 校验失败，取消启动，避免断网"
-        return 1
-    }
-
-    # 9) 固定使用主compose文件（已合并双栈配置）
+    # 9) 固定使用安装时生成的正式 compose 文件
     local compose_files=(docker-compose.yml)
-    # 无IPv6场景：自动删除compose中的ipv6_address配置，避免启动报错
-    if [ "$USE_IPV6" -eq 0 ]; then
-        sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
-    fi
 
     # 10) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
     compose_deploy_with_repo_switch "mihomo" "$CONTAINER_NAME" "${compose_files[@]}" || return 1
 
-    echo "✅ mihomo 已启动！访问地址：http://${mihomo}:9090/ui/  密码：admin"
+    # 11) 输出访问地址
+    echo "✅ mihomo 已启动"
+    echo "网络模式：${MIHOMO_NETWORK_MODE}"
     echo "容器名称：${CONTAINER_NAME}"
-    if [ "$USE_IPV6" -eq 1 ]; then
-        echo "IPv6：${mihomo6}"
+    if [ "$MIHOMO_NETWORK_MODE" = "macvlan" ]; then
+        echo "macvlan 网络：${SELECTED_MACVLAN}"
+        echo "IPv4 地址：${mihomo}"
+        echo "MAC 地址：${mihomomac}"
+        echo "访问地址：http://${mihomo}:9090/ui/  密码：admin"
+        if [ "$USE_IPV6" -eq 1 ] && [ -n "$mihomo6" ]; then
+            echo "IPv6：${mihomo6}"
+            echo "IPv6 访问：http://[${mihomo6}]:9090/ui/  密码：admin"
+        else
+            echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
+        fi
     else
-        echo "IPv6：未启用（所选 macvlan 未开启 IPv6 或无 IPv6 子网）"
+        local host_ip
+        host_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+        [ -z "$host_ip" ] && host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+        if [ -n "$host_ip" ]; then
+            echo "访问地址：http://${host_ip}:9090/ui/  密码：admin"
+        else
+            echo "访问地址：http://<宿主机IP>:9090/ui/  密码：admin"
+        fi
+        echo "⚠️ host 模式会直接占用宿主机端口，请确认 7890/7891/7892/9090 等端口没有冲突。"
     fi
 
-    # 11) 可选删除备份（带挂载检查）
-    repo_offer_delete_backup "mihomo" "$BAK_DIR" "mihomo"
+    # 12) 可选删除备份（带挂载检查）
+    repo_offer_delete_backup "mihomo" "$BAK_DIR" "$CONTAINER_NAME"
 }
 
 install_ddnsgo() {
