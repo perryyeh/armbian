@@ -104,5 +104,10 @@ chmod +x install.sh
 - https://github.com/IrineSistiana/mosdns
 - https://github.com/AdguardTeam/AdGuardHome
 
+## 🔧 开发备忘
+- Docker 容器名与安装目录同名（如 `/data/dockerapps/mosdns` → 容器名 `mosdns`）
+- 推送前先在测试环境验证：`git push perryyeh/armbian main`
+- 关联服务仓库：librespeed / adguardhome / mosdns / mihomo / ddnsgo / lucky
+
 ## 📜 License
 MIT License © 2026
