@@ -976,14 +976,14 @@ create_macvlan_network() {
     # 取前 4 段作为稳定 ULA /64 前缀（fd10:0:1:xx）
     ula_prefix="$(echo "$ip6_addr" | awk -F: '{print $1":"$2":"$3":"$4}')"
     suggest_cidr6="${ula_prefix}::/64"
-    suggest_gateway6="${ula_prefix}::1"
+    suggest_gateway6="${ula_prefix}::0"
   else
     # 没有现成 ULA：退回你原来的“IPv4->ULA 前缀”方案（但只作为建议）
     if [ -n "$gateway" ]; then
       local prefix6
       prefix6="$(ipv4_to_ipv6_prefix "$gateway")"
       suggest_cidr6="${prefix6}::/64"
-      suggest_gateway6="${prefix6}::1"
+      suggest_gateway6="${prefix6}::0"
     fi
   fi
 
@@ -992,7 +992,7 @@ create_macvlan_network() {
     read -r -p "请输入 IPv6 网关 (回车使用推荐 $suggest_gateway6，留空表示不启用IPv6): " gateway6
     [ -z "$gateway6" ] && gateway6="$suggest_gateway6"
   else
-    read -r -p "请输入 IPv6 网关 (例如 fd10:0:1:0::1，留空表示不启用IPv6): " gateway6
+    read -r -p "请输入 IPv6 网关 (例如 fd10:168:1::0，留空表示不启用IPv6): " gateway6
   fi
 
   if [ -z "$gateway6" ]; then
