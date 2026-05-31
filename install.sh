@@ -1633,8 +1633,10 @@ install_mosdns() {
     else
         mihomo="$(echo "$mihomo_input" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)"
         [ -n "$mihomo" ] || { echo "❌ 无法解析 IPv4：$mihomo_input"; return 1; }
-        mihomo6=""
-        if [ "$mihomo" != "198.18.0.2" ]; then
+        if [ "$mihomo" = "198.18.0.2" ]; then
+            mihomo6="fd00:6152::2"
+        else
+            mihomo6=""
             calculate_ip_mac "${mihomo##*.}"
             if [ "$calculated_ip" = "$mihomo" ]; then
                 mihomo6="$calculated_ip6"
@@ -1644,9 +1646,9 @@ install_mosdns() {
 
     echo "📌 上游 mihomo / surge IPv4：$mihomo"
     if [ -n "$mihomo6" ]; then
-        echo "📌 上游 mihomo IPv6：$mihomo6"
+        echo "📌 上游 mihomo / surge IPv6：$mihomo6"
     else
-        echo "📌 上游 mihomo IPv6：未设置（Surge 或无法从当前 macvlan 推导）"
+        echo "📌 上游 mihomo / surge IPv6：未设置（无法从当前 macvlan 推导）"
     fi
 
     # 2) 选择 mosdns IPv4 最后一段（回车默认 119）
@@ -1706,7 +1708,7 @@ install_mosdns() {
     if [ -f "dns.yaml" ]; then
         # 用 # 作为分隔符更稳（避免 / 等字符导致 sed 崩）
         sed -i "s#198.18.0.2#${mihomo}#g" dns.yaml
-        if [ "$mihomo" != "198.18.0.2" ] && [ -n "$mihomo6" ]; then
+        if [ -n "$mihomo6" ]; then
             sed -i "s#fd00:6152::2#${mihomo6}#g" dns.yaml
         fi
         if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
