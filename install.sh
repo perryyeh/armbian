@@ -1612,8 +1612,8 @@ install_mosdns() {
       *) return 1 ;;
     esac
 
-    # 仅用于写 mosdns 上游：只需要 mihomo IPv4
-    local mihomo_input mihomo
+    # 用于写 mosdns 上游：mihomo 写 IPv4；能确定 IPv6 时再写 fake IPv6 上游
+    local mihomo_input mihomo mihomo6
 
     read -r -p "surge请输入198.18.0.2, mihomo请输入输完整IP或最后一段（回车默认 120）: " mihomo_input
 
@@ -1621,6 +1621,7 @@ install_mosdns() {
     if [ -z "$mihomo_input" ]; then
         calculate_ip_mac 120
         mihomo="$calculated_ip"
+        mihomo6="$calculated_ip6"
     elif [[ "$mihomo_input" =~ ^[0-9]+$ ]]; then
         if [ "$mihomo_input" -lt 1 ] || [ "$mihomo_input" -gt 254 ]; then
             echo "❌ 无效的最后一段：$mihomo_input"
@@ -1628,12 +1629,25 @@ install_mosdns() {
         fi
         calculate_ip_mac "$mihomo_input"
         mihomo="$calculated_ip"
+        mihomo6="$calculated_ip6"
     else
         mihomo="$(echo "$mihomo_input" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n1)"
         [ -n "$mihomo" ] || { echo "❌ 无法解析 IPv4：$mihomo_input"; return 1; }
+        mihomo6=""
+        if [ "$mihomo" != "198.18.0.2" ]; then
+            calculate_ip_mac "${mihomo##*.}"
+            if [ "$calculated_ip" = "$mihomo" ]; then
+                mihomo6="$calculated_ip6"
+            fi
+        fi
     fi
 
     echo "📌 上游 mihomo / surge IPv4：$mihomo"
+    if [ -n "$mihomo6" ]; then
+        echo "📌 上游 mihomo IPv6：$mihomo6"
+    else
+        echo "📌 上游 mihomo IPv6：未设置（Surge 或无法从当前 macvlan 推导）"
+    fi
 
     # 2) 选择 mosdns IPv4 最后一段（回车默认 119）
     local mosdns_last
@@ -1692,6 +1706,9 @@ install_mosdns() {
     if [ -f "dns.yaml" ]; then
         # 用 # 作为分隔符更稳（避免 / 等字符导致 sed 崩）
         sed -i "s#198.18.0.2#${mihomo}#g" dns.yaml
+        if [ "$mihomo" != "198.18.0.2" ] && [ -n "$mihomo6" ]; then
+            sed -i "s#fd00:6152::2#${mihomo6}#g" dns.yaml
+        fi
         if [ -n "$gateway" ] && [ "$gateway" != "null" ]; then
             sed -i "s#10.0.0.1#${gateway}#g" dns.yaml
         fi
@@ -1700,7 +1717,29 @@ install_mosdns() {
         return 1
     fi
 
-    # 9) 写 .env（compose 读取）
+    # 9) fake IPv6 开关：不开时 AAAA 也强制走 fake IPv4，避免 fake IPv6 链路不通导致解析可用但访问失败
+    if [ -f "config.yaml" ]; then
+        local enable_fakeipv6 fakeipv6_exec_count
+        echo "⚠️ fake IPv6 解析需要确认 fake IPv6 能拿到 AAAA，且代理能实际使用这些 fake IPv6。"
+        echo "⚠️ Surge 下 fake IPv6 坑较多，未确认链路可用前建议不要开启。"
+        read -r -p "是否开启 fake IPv6 解析？[y/N]: " enable_fakeipv6
+        if [[ ! "$enable_fakeipv6" =~ ^[Yy]$ ]]; then
+            fakeipv6_exec_count=$(grep -c 'exec: \$forward_fakeipv6' config.yaml || true)
+            if [ "$fakeipv6_exec_count" -ne 2 ]; then
+                echo "❌ config.yaml 中 forward_fakeipv6 执行项数量异常：$fakeipv6_exec_count，取消安装"
+                return 1
+            fi
+            sed -i 's#exec: \$forward_fakeipv6#exec: \$forward_fakeipv4#g' config.yaml
+            echo "✅ 已关闭 fake IPv6 解析：AAAA 将走 forward_fakeipv4"
+        else
+            echo "✅ 已开启 fake IPv6 解析：AAAA 将走 forward_fakeipv6"
+        fi
+    else
+        echo "❌ 未找到 ${WORK_DIR}/config.yaml"
+        return 1
+    fi
+
+    # 10) 写 .env（compose 读取）
     cat > .env <<EOF
 MACVLAN_NET=${SELECTED_MACVLAN}
 ipv4=${mosdns}
