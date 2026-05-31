@@ -1644,11 +1644,16 @@ install_mosdns() {
         fi
     fi
 
-    echo "📌 上游 mihomo / surge IPv4：$mihomo"
-    if [ -n "$mihomo6" ]; then
-        echo "📌 上游 mihomo / surge IPv6：$mihomo6"
+    if [ "$mihomo" = "198.18.0.2" ]; then
+        echo "📌 上游 surge IPv4：$mihomo"
+        echo "📌 上游 surge IPv6：$mihomo6"
     else
-        echo "📌 上游 mihomo / surge IPv6：未设置（无法从当前 macvlan 推导）"
+        echo "📌 上游 mihomo IPv4：$mihomo"
+        if [ -n "$mihomo6" ]; then
+            echo "📌 上游 mihomo IPv6：$mihomo6"
+        else
+            echo "📌 上游 mihomo IPv6：无法找到"
+        fi
     fi
 
     # 2) 选择 mosdns IPv4 最后一段（回车默认 119）
@@ -1722,19 +1727,26 @@ install_mosdns() {
     # 9) fake IPv6 开关：不开时 AAAA 也强制走 fake IPv4，避免 fake IPv6 链路不通导致解析可用但访问失败
     if [ -f "config.yaml" ]; then
         local enable_fakeipv6 fakeipv6_exec_count
-        echo "⚠️ fake IPv6 解析需要确认 fake IPv6 能拿到 AAAA，且代理能实际使用这些 fake IPv6。"
-        echo "⚠️ Surge 下 fake IPv6 坑较多，未确认链路可用前建议不要开启。"
-        read -r -p "是否开启 fake IPv6 解析？[y/N]: " enable_fakeipv6
-        if [[ ! "$enable_fakeipv6" =~ ^[Yy]$ ]]; then
-            fakeipv6_exec_count=$(grep -c 'exec: \$forward_fakeipv6' config.yaml || true)
-            if [ "$fakeipv6_exec_count" -ne 2 ]; then
-                echo "❌ config.yaml 中 forward_fakeipv6 执行项数量异常：$fakeipv6_exec_count，取消安装"
-                return 1
-            fi
+        fakeipv6_exec_count=$(grep -c 'exec: \$forward_fakeipv6' config.yaml || true)
+        if [ "$fakeipv6_exec_count" -ne 2 ]; then
+            echo "❌ config.yaml 中 forward_fakeipv6 执行项数量异常：$fakeipv6_exec_count，取消安装"
+            return 1
+        fi
+
+        if [ -z "$mihomo6" ]; then
+            echo "⚠️ 没有 surge IPv6，也没有找到 mihomo IPv6，只能关闭 fake IPv6 解析。"
             sed -i 's#exec: \$forward_fakeipv6#exec: \$forward_fakeipv4#g' config.yaml
             echo "✅ 已关闭 fake IPv6 解析：AAAA 将走 forward_fakeipv4"
         else
-            echo "✅ 已开启 fake IPv6 解析：AAAA 将走 forward_fakeipv6"
+            echo "⚠️ fake IPv6 解析需要确认 fake IPv6 能拿到 AAAA，且代理能实际使用这些 fake IPv6。"
+            echo "⚠️ Surge 下 fake IPv6 坑较多，未确认链路可用前建议不要开启。"
+            read -r -p "是否开启 fake IPv6 解析？[y/N]: " enable_fakeipv6
+            if [[ ! "$enable_fakeipv6" =~ ^[Yy]$ ]]; then
+                sed -i 's#exec: \$forward_fakeipv6#exec: \$forward_fakeipv4#g' config.yaml
+                echo "✅ 已关闭 fake IPv6 解析：AAAA 将走 forward_fakeipv4"
+            else
+                echo "✅ 已开启 fake IPv6 解析：AAAA 将走 forward_fakeipv6"
+            fi
         fi
     else
         echo "❌ 未找到 ${WORK_DIR}/config.yaml"
