@@ -74,7 +74,22 @@ chmod +x install.sh
 9. 安装adguardhome，用mosdns当上游，dns写mosdns的ip。
 10. 最后创建macvlan bridge，解决宿主机和容器之间的互通。
 
-### 4.ipv4+ipv6回家
+### 4. mosdns 在 Surge 下使用 fake IPv6
+
+mosdns 选择 Surge 作为上游，并开启 fake IPv6 解析前，需要先确认 Surge 的 fake IPv6 链路完整可用。仅 DNS 能返回 fake IPv6 不够，客户端还必须能把该 IPv6 段路由到运行 Surge 的 Mac，并由 Surge VIF 承载。
+
+路由器侧：
+1. 添加静态路由：`fd00:6152::/126` 下一跳到运行 Surge 的 Mac。
+
+Mac 侧：
+1. 开启 IPv6 转发：`net.inet6.ip6.forwarding=1`。
+2. 把 `fd00:6152:0:9::/64` 绑定到 Surge VIF。
+3. 在主网卡发送 RA，告诉局域网：`fd00:6152:0:9::/64` 这个 IPv6 段由这台 Mac 承载。
+4. Mac 开机后或主网卡变动后，需要重新确认/切换第 2、3 步，确保 fake IPv6 段仍绑定在 Surge VIF，RA 仍从当前主网卡发布。
+
+如果上述条件不满足，安装 mosdns 时不要开启 fake IPv6 解析，让 AAAA 也走 fake IPv4。
+
+### 5.ipv4+ipv6回家
 ⚠️ 入站协议尽量避免udp。下列方案依赖mihomo入站，请先安装mihomo并配置好入站端口。
 
 | 场景 | 公网ipv4 | 公网ipv6 | 容器可得ipv6 | 入站方式                                                                                           
