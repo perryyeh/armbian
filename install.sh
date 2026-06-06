@@ -441,6 +441,20 @@ env_require_vars() {
     [ "$missing" -eq 0 ]
 }
 
+remove_compose_ipv6_fields() {
+  local compose_file="${1:-docker-compose.yml}"
+  [ -f "$compose_file" ] || return 0
+
+  # 无 IPv6 场景：删除固定 IPv6 地址，避免 compose 校验/启动报错。
+  sed -i "/ipv6_address: \${ipv6}/d" "$compose_file"
+
+  # 同时删除仅用于 IPv6 RA 路由学习的 endpoint sysctl；IPv4-only macvlan 不需要它。
+  sed -i '/driver_opts:/{
+    N
+    /com\.docker\.network\.endpoint\.sysctls: net\.ipv6\.conf\.IFNAME\.accept_ra_rt_info_max_plen=128/d
+  }' "$compose_file"
+}
+
 prompt_ipv4_last_octet() {
   # 用法：prompt_ipv4_last_octet "提示语" 默认值
   local prompt="$1"
@@ -1449,7 +1463,7 @@ EOF
 
     # 8) 无IPv6场景：自动删除compose中的ipv6配置避免报错
     if [ -z "$librespeed6" ]; then
-        sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
+        remove_compose_ipv6_fields docker-compose.yml
     fi
 
     # 9) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
@@ -1578,7 +1592,7 @@ install_adguardhome() {
     local compose_files=(docker-compose.yml)
     # 无IPv6场景：自动删除compose中的ipv6_address配置，避免启动报错
     if [ "$USE_IPV6" -eq 0 ]; then
-        sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
+        remove_compose_ipv6_fields docker-compose.yml
     fi
 
     # 10) 一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
@@ -1784,7 +1798,7 @@ EOF
     local compose_files=(docker-compose.yml)
     # 无IPv6场景：自动删除compose中的ipv6_address配置，避免启动报错
     if [ "$USE_IPV6" -eq 0 ]; then
-        sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
+        remove_compose_ipv6_fields docker-compose.yml
     fi
     # 10）一步部署：校验 -> 停旧备份 -> 起新 -> next->正式 -> 正式再up -> 失败回滚
     compose_deploy_with_repo_switch "mosdns" "$CONTAINER_NAME" "${compose_files[@]}" || return 1
@@ -1937,7 +1951,7 @@ install_mihomo() {
 
         # 无 IPv6 场景：自动删除 compose 中的 ipv6_address 配置，避免启动报错
         if [ "$USE_IPV6" -eq 0 ]; then
-            sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
+            remove_compose_ipv6_fields docker-compose.yml
         fi
     else
         rm -f "$WORK_DIR/.env"
@@ -2095,7 +2109,7 @@ install_ddnsgo() {
 
         # 无 IPv6 场景：自动删除 compose 中的 ipv6_address 配置，避免启动报错
         if [ "$USE_IPV6" -eq 0 ]; then
-            sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
+            remove_compose_ipv6_fields docker-compose.yml
         fi
     else
         rm -f "$WORK_DIR/.env"
@@ -2255,7 +2269,7 @@ install_lucky() {
 
         # 无 IPv6 场景：自动删除 compose 中的 ipv6_address 配置，避免启动报错
         if [ "$USE_IPV6" -eq 0 ]; then
-            sed -i "/ipv6_address: \${ipv6}/d" docker-compose.yml
+            remove_compose_ipv6_fields docker-compose.yml
         fi
     else
         rm -f "$WORK_DIR/.env"
