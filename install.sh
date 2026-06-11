@@ -1742,13 +1742,24 @@ install_mosdns() {
     if [ -f "config.yaml" ]; then
         local enable_fakeipv6
 
-        if [ -z "$mihomo6" ]; then
-            echo "⚠️ 没有 surge IPv6，也没有找到 mihomo IPv6，只能关闭 fake IPv6 解析。"
+        if [ "$mihomo" = "198.18.0.2" ]; then
+            # surge：IPv6 是写死的，必须询问
+            echo "⚠️ Surge fake IPv6 需要确认链路可用，坑较多。"
+            read -r -p "是否开启 fake IPv6 解析？[y/N]: " enable_fakeipv6
+            if [[ ! "$enable_fakeipv6" =~ ^[Yy]$ ]]; then
+                sed -i 's#exec: \$forward_fakeipv6#exec: \$forward_fakeipv4#g' config.yaml
+                echo "✅ 已关闭 fake IPv6 解析：AAAA 将走 forward_fakeipv4"
+            else
+                echo "✅ 已开启 fake IPv6 解析：AAAA 将走 forward_fakeipv6"
+            fi
+        elif [ -z "$mihomo6" ]; then
+            # mihomo 无 IPv6：直接关
+            echo "⚠️ mihomo 无 IPv6，关闭 fake IPv6 解析。"
             sed -i 's#exec: \$forward_fakeipv6#exec: \$forward_fakeipv4#g' config.yaml
             echo "✅ 已关闭 fake IPv6 解析：AAAA 将走 forward_fakeipv4"
         else
-            echo "⚠️ fake IPv6 解析需要确认 fake IPv6 能拿到 AAAA，且代理能实际使用这些 fake IPv6。"
-            echo "⚠️ Surge 下 fake IPv6 坑较多，未确认链路可用前建议不要开启。"
+            # mihomo 有 IPv6：询问
+            echo "⚠️ mihomo 有 IPv6，是否开启 fake IPv6 解析？"
             read -r -p "是否开启 fake IPv6 解析？[y/N]: " enable_fakeipv6
             if [[ ! "$enable_fakeipv6" =~ ^[Yy]$ ]]; then
                 sed -i 's#exec: \$forward_fakeipv6#exec: \$forward_fakeipv4#g' config.yaml
