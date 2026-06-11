@@ -1740,12 +1740,7 @@ install_mosdns() {
 
     # 9) fake IPv6 开关：不开时 AAAA 也强制走 fake IPv4，避免 fake IPv6 链路不通导致解析可用但访问失败
     if [ -f "config.yaml" ]; then
-        local enable_fakeipv6 fakeipv6_exec_count
-        fakeipv6_exec_count=$(grep -c 'exec: \$forward_fakeipv6' config.yaml || true)
-        if [ "$fakeipv6_exec_count" -ne 2 ]; then
-            echo "❌ config.yaml 中 forward_fakeipv6 执行项数量异常：$fakeipv6_exec_count，取消安装"
-            return 1
-        fi
+        local enable_fakeipv6
 
         if [ -z "$mihomo6" ]; then
             echo "⚠️ 没有 surge IPv6，也没有找到 mihomo IPv6，只能关闭 fake IPv6 解析。"
